@@ -10,8 +10,9 @@
 <!-- LOVABLE:END -->
 
 - Use TanStack Start server functions for app-internal server logic, as approved by the user; third-party requests and secrets never run in the browser.
-- Keep private pages under the Supabase authenticated layout, with a separate MFA gate and server/RLS enforcement; navigation alone is not a security boundary.
+- Keep private pages under the Supabase authenticated layout with server/RLS enforcement; MFA has been removed by owner decision, while navigation alone remains insufficient as a security boundary.
 - Store encrypted connector secrets in a server-only table, separate from browser-readable connection metadata, to prevent credential disclosure.
 - Store publication defaults in user-owned settings and validate them server-side; future publishing steps must consume this central source.
-- Auth audit rows are server-generated after verified access, and settings audit rows are written by a database trigger; clients cannot fabricate history.
+- Password login runs in a public CSRF-protected server function using Supabase Auth's rate limits and writes a fixed audit row only after successful authentication; settings audit rows remain trigger-generated, so clients cannot fabricate history.
+- Use the shared PasswordInput for every password field to preserve manager autocomplete and reset visibility on submission or screen changes.
 - Keep account creation in the shared login screen, using Supabase Auth and its profile trigger; only an actual returned session allows immediate entry, so email confirmation is never bypassed.

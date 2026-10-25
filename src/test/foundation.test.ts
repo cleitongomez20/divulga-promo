@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { publicationDefaults as d, requiresAdminMfa, settingsSchema } from '@/lib/foundation';
+import { publicationDefaults as d, settingsSchema } from '@/lib/foundation';
 describe('Publication defaults specified in A6', () => {
   it('uses São Paulo time', () => expect(d.timezone).toBe('America/Sao_Paulo'));
   it('prepares 3 products each day', () => expect(d.products_per_day).toBe(3));
@@ -11,8 +11,4 @@ describe('Publication defaults specified in A6', () => {
   it('avoids repeating a product for 14 days', () => expect(d.repeat_days).toBe(14));
   it('allows at most 3 default attempts', () => expect(d.max_attempts).toBe(3));
   it('rejects products with fewer than 3 images', () => expect(settingsSchema.safeParse({ ...d,name:'Owner',min_images:2 }).success).toBe(false));
-});
-describe('Admin second factor', () => {
-  it('requires admin aal2', () => { expect(requiresAdminMfa(true,'aal1')).toBe(true); expect(requiresAdminMfa(true,undefined)).toBe(true); expect(requiresAdminMfa(true,'aal2')).toBe(false); });
-  it('does not require admin second factor for regular users', () => expect(requiresAdminMfa(false,'aal1')).toBe(false));
 });
