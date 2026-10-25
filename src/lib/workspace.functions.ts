@@ -30,7 +30,10 @@ export const saveSettings = createServerFn({ method: 'POST' }).middleware([requi
 export const recordAccess = createServerFn({ method: 'POST' }).middleware([requireSupabaseAuth]).handler(async ({ context }) => {
   const { data: allowed } = await context.supabase.rpc('private_access');
   if (!allowed) throw new Error('Confirme seu código de segurança.');
-  const { error } = await context.supabase.rpc('record_foundation_access');
+  const { supabaseAdmin } = await import('@/integrations/supabase/client.server');
+  const { data: recent } = await context.supabase.from('activity_log').select('id').eq('action', 'Acesso confirmado').gte('created_at', new Date(Date.now() - 300000).toISOString()).limit(1);
+  if (recent?.length) return { ok: true };
+  const { error } = await supabaseAdmin.from('activity_log').insert({ user_id: context.userId, action: 'Acesso confirmado', result: 'Sucesso' });
   if (error) throw new Error('Não foi possível registrar o acesso.');
   return { ok: true };
 });
