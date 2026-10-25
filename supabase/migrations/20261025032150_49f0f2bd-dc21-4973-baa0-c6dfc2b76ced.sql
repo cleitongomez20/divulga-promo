@@ -1,0 +1,1 @@
+ALTER FUNCTION public.has_role(uuid,public.app_role) SECURITY INVOKER; ALTER FUNCTION public.private_access() SECURITY INVOKER; CREATE POLICY secrets_block_browser ON public.connector_secrets FOR ALL TO authenticated USING(false) WITH CHECK(false);
