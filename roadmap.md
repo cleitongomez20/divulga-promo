@@ -1,4 +1,5 @@
 # Divulga Promo
+- [ ] Requested access adjustments only: remove 2FA by owner decision with a new private_access migration, password-only login with server audit, reusable password visibility control, tests and security verification; do not begin B2.
 - [x] Add account creation directly on the login screen; form and return-to-login verified on desktop/mobile, signup payload tested. Actual signup/email delivery awaits external Supabase settings and owner's test.
 - [x] B1 implementation: private access, owner profiles, roles, mandatory admin MFA, A5 tables, settings and audit history.
 - [x] Verify public screens, signed-out protection, rule tests (13 passing), database linter and security scan.
