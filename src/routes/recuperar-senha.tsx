@@ -1,0 +1,8 @@
+import { createFileRoute, Link } from '@tanstack/react-router';
+import { useState, type FormEvent } from 'react';
+import { supabase } from '@/integrations/supabase/client';
+import { pageHead } from '@/lib/metadata';
+import { Brand } from '@/components/brand';
+import { Button } from '@/components/ui/button';
+export const Route = createFileRoute('/recuperar-senha')({ head: () => pageHead('Recuperar senha', 'Receba por e-mail um link seguro para redefinir sua senha.'), component: Recovery });
+function Recovery() { const [message, setMessage] = useState(''); const [busy, setBusy] = useState(false); async function submit(e: FormEvent<HTMLFormElement>) { e.preventDefault(); const email = String(new FormData(e.currentTarget).get('email')); setBusy(true); const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: `${window.location.origin}/reset-password` }); setBusy(false); setMessage(error ? 'Não foi possível enviar. Tente novamente em alguns minutos.' : 'Se sua conta estiver autorizada, você receberá um link. Confira também o spam.'); } return <main className="mx-auto max-w-md px-6 py-12"><Brand /><h1 className="mt-12 text-3xl font-bold">Recuperar sua senha</h1><p className="mt-4 text-muted-foreground">Enviaremos um link seguro para seu e-mail.</p><form className="mt-8 space-y-5" onSubmit={submit}><label htmlFor="email" className="form-label">Seu e-mail</label><input id="email" name="email" className="field" type="email" required autoComplete="email" /><Button disabled={busy} className="w-full">{busy ? 'Enviando…' : 'Enviar link'}</Button>{message && <p role="status" className="text-sm">{message}</p>}</form><Button asChild variant="link" className="mt-6 px-0"><Link to="/auth">Voltar para entrar</Link></Button></main>; }
