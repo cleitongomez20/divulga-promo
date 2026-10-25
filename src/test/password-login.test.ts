@@ -15,7 +15,10 @@ describe('Server-observed password login', () => {
     await invoke({ data: { email: 'owner@example.com', password: 'test-password' } });
     expect(mocks.from).toHaveBeenCalledWith('activity_log');
     expect(mocks.insert).toHaveBeenCalledWith({ user_id: 'verified-owner', action: 'Acesso confirmado', result: 'Sucesso' });
-    expect(mocks.signInWithPassword.mock.invocationCallOrder[0]).toBeLessThan(mocks.insert.mock.invocationCallOrder[0]);
+    const verificationOrder = mocks.signInWithPassword.mock.invocationCallOrder[0];
+    const auditOrder = mocks.insert.mock.invocationCallOrder[0];
+    if (verificationOrder === undefined || auditOrder === undefined) throw new Error('Expected both password verification and audit recording');
+    expect(verificationOrder).toBeLessThan(auditOrder);
   });
   it('does not write history for rejected credentials and conceals provider details', async () => {
     mocks.signInWithPassword.mockResolvedValue({ data: {}, error: new Error('Email does not exist') });
