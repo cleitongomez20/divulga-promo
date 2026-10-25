@@ -948,6 +948,8 @@ export type Database = {
         Returns: boolean
       }
       private_access: { Args: never; Returns: boolean }
+      record_foundation_access: { Args: never; Returns: undefined }
+      save_foundation_settings: { Args: { payload: Json }; Returns: undefined }
     }
     Enums: {
       app_role: "admin" | "user"
