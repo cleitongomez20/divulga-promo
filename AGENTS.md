@@ -14,3 +14,4 @@
 - Store encrypted connector secrets in a server-only table, separate from browser-readable connection metadata, to prevent credential disclosure.
 - Store publication defaults in user-owned settings and validate them server-side; future publishing steps must consume this central source.
 - Auth audit rows are server-generated after verified access, and settings audit rows are written by a database trigger; clients cannot fabricate history.
+- Keep account creation in the shared login screen, using Supabase Auth and its profile trigger; only an actual returned session allows immediate entry, so email confirmation is never bypassed.
