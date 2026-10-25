@@ -7,7 +7,6 @@ export const publicationDefaults = {
   warmup_initial_limit: 1, warmup_second_end_day: 7, warmup_second_limit: 2,
   repeat_days: 14, max_attempts: 3, min_images: 3,
 };
-export function requiresAdminMfa(isAdmin: boolean, aal: unknown) { return isAdmin && aal !== 'aal2'; }
 export const settingsSchema = z.object({
   name: z.string().trim().max(100),
   timezone: z.string().refine(value => { try { new Intl.DateTimeFormat('pt-BR', { timeZone: value }); return true; } catch { return false; } }, 'Escolha um fuso válido.'),
