@@ -229,6 +229,30 @@ export type Database = {
           },
         ]
       }
+      connector_runtime: {
+        Row: {
+          created_at: string
+          interval_ms: number
+          next_allowed_at: string
+          scope: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          interval_ms?: number
+          next_allowed_at?: string
+          scope: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          interval_ms?: number
+          next_allowed_at?: string
+          scope?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       connector_secrets: {
         Row: {
           ciphertext: string
@@ -949,7 +973,29 @@ export type Database = {
       }
       private_access: { Args: never; Returns: boolean }
       record_foundation_access: { Args: never; Returns: undefined }
+      reserve_connector_slot: {
+        Args: { p_interval_ms?: number; p_scope: string }
+        Returns: number
+      }
       save_foundation_settings: { Args: { payload: Json }; Returns: undefined }
+      shopee_record_test: {
+        Args: {
+          p_credential_id: string
+          p_details: Json
+          p_result: string
+          p_status: string
+          p_user_id: string
+        }
+        Returns: undefined
+      }
+      shopee_remove_credentials: {
+        Args: { p_user_id: string }
+        Returns: undefined
+      }
+      shopee_store_credentials: {
+        Args: { p_ciphertext: string; p_user_id: string }
+        Returns: undefined
+      }
     }
     Enums: {
       app_role: "admin" | "user"
