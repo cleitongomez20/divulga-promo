@@ -1,0 +1,3 @@
+CREATE FUNCTION public.slow_shopee_requests() RETURNS void LANGUAGE plpgsql SECURITY INVOKER SET search_path=public AS $$ BEGIN UPDATE public.connector_runtime SET interval_ms=least(interval_ms*2,60000),next_allowed_at=greatest(next_allowed_at,clock_timestamp()+make_interval(secs=>least(interval_ms*2,60000)/1000.0)) WHERE scope='shopee'; END $$;
+REVOKE ALL ON FUNCTION public.slow_shopee_requests() FROM PUBLIC,anon,authenticated;
+GRANT EXECUTE ON FUNCTION public.slow_shopee_requests() TO service_role;

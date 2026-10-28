@@ -14,6 +14,7 @@ import { Route as AuthenticatedRouteRouteImport } from './routes/_authenticated/
 import { Route as AuthRouteImport } from './routes/auth'
 import { Route as RecuperarSenhaRouteImport } from './routes/recuperar-senha'
 import { Route as ResetPasswordRouteImport } from './routes/reset-password'
+import { Route as AuthenticatedConexoesRouteImport } from './routes/_authenticated/conexoes'
 import { Route as AuthenticatedConfiguracoesRouteImport } from './routes/_authenticated/configuracoes'
 import { Route as AuthenticatedHistoricoRouteImport } from './routes/_authenticated/historico'
 import { Route as AuthenticatedPainelRouteImport } from './routes/_authenticated/painel'
@@ -42,6 +43,11 @@ const ResetPasswordRoute = ResetPasswordRouteImport.update({
   path: '/reset-password',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AuthenticatedConexoesRoute = AuthenticatedConexoesRouteImport.update({
+  id: '/conexoes',
+  path: '/conexoes',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
 const AuthenticatedConfiguracoesRoute =
   AuthenticatedConfiguracoesRouteImport.update({
     id: '/configuracoes',
@@ -64,6 +70,7 @@ export interface FileRoutesByFullPath {
   '/auth': typeof AuthRoute
   '/recuperar-senha': typeof RecuperarSenhaRoute
   '/reset-password': typeof ResetPasswordRoute
+  '/conexoes': typeof AuthenticatedConexoesRoute
   '/configuracoes': typeof AuthenticatedConfiguracoesRoute
   '/historico': typeof AuthenticatedHistoricoRoute
   '/painel': typeof AuthenticatedPainelRoute
@@ -73,6 +80,7 @@ export interface FileRoutesByTo {
   '/auth': typeof AuthRoute
   '/recuperar-senha': typeof RecuperarSenhaRoute
   '/reset-password': typeof ResetPasswordRoute
+  '/conexoes': typeof AuthenticatedConexoesRoute
   '/configuracoes': typeof AuthenticatedConfiguracoesRoute
   '/historico': typeof AuthenticatedHistoricoRoute
   '/painel': typeof AuthenticatedPainelRoute
@@ -84,6 +92,7 @@ export interface FileRoutesById {
   '/auth': typeof AuthRoute
   '/recuperar-senha': typeof RecuperarSenhaRoute
   '/reset-password': typeof ResetPasswordRoute
+  '/_authenticated/conexoes': typeof AuthenticatedConexoesRoute
   '/_authenticated/configuracoes': typeof AuthenticatedConfiguracoesRoute
   '/_authenticated/historico': typeof AuthenticatedHistoricoRoute
   '/_authenticated/painel': typeof AuthenticatedPainelRoute
@@ -95,6 +104,7 @@ export interface FileRouteTypes {
     | '/auth'
     | '/recuperar-senha'
     | '/reset-password'
+    | '/conexoes'
     | '/configuracoes'
     | '/historico'
     | '/painel'
@@ -104,6 +114,7 @@ export interface FileRouteTypes {
     | '/auth'
     | '/recuperar-senha'
     | '/reset-password'
+    | '/conexoes'
     | '/configuracoes'
     | '/historico'
     | '/painel'
@@ -114,6 +125,7 @@ export interface FileRouteTypes {
     | '/auth'
     | '/recuperar-senha'
     | '/reset-password'
+    | '/_authenticated/conexoes'
     | '/_authenticated/configuracoes'
     | '/_authenticated/historico'
     | '/_authenticated/painel'
@@ -164,6 +176,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ResetPasswordRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_authenticated/conexoes': {
+      id: '/_authenticated/conexoes'
+      path: '/conexoes'
+      fullPath: '/conexoes'
+      preLoaderRoute: typeof AuthenticatedConexoesRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/configuracoes': {
       id: '/_authenticated/configuracoes'
       path: '/configuracoes'
@@ -189,12 +208,14 @@ declare module '@tanstack/react-router' {
 }
 
 interface AuthenticatedRouteRouteChildren {
+  AuthenticatedConexoesRoute: typeof AuthenticatedConexoesRoute
   AuthenticatedConfiguracoesRoute: typeof AuthenticatedConfiguracoesRoute
   AuthenticatedHistoricoRoute: typeof AuthenticatedHistoricoRoute
   AuthenticatedPainelRoute: typeof AuthenticatedPainelRoute
 }
 
 const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
+  AuthenticatedConexoesRoute: AuthenticatedConexoesRoute,
   AuthenticatedConfiguracoesRoute: AuthenticatedConfiguracoesRoute,
   AuthenticatedHistoricoRoute: AuthenticatedHistoricoRoute,
   AuthenticatedPainelRoute: AuthenticatedPainelRoute,
