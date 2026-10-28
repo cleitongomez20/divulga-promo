@@ -1,0 +1,1 @@
+CREATE POLICY connector_runtime_server_only ON public.connector_runtime FOR ALL TO service_role USING(true) WITH CHECK(true);
