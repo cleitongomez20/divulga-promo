@@ -996,6 +996,7 @@ export type Database = {
         Args: { p_ciphertext: string; p_user_id: string }
         Returns: undefined
       }
+      slow_shopee_requests: { Args: never; Returns: undefined }
     }
     Enums: {
       app_role: "admin" | "user"
