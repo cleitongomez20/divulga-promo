@@ -16,3 +16,5 @@
 - Password login runs in a public CSRF-protected server function using Supabase Auth's rate limits and writes a fixed audit row only after successful authentication; settings audit rows remain trigger-generated, so clients cannot fabricate history.
 - Use the shared PasswordInput for every password field to preserve manager autocomplete and reset visibility on submission or screen changes.
 - Keep account creation in the shared login screen, using Supabase Auth and its profile trigger; only an actual returned session allows immediate entry, so email confirmation is never bypassed.
+- Shopee transport and AES-GCM encryption live in server-only modules behind authenticated server functions; bind ciphertext to the owner and keep signature payloads byte-identical to prevent leaks and authentication drift.
+- Reserve Shopee requests atomically in connector_runtime, never in worker memory; transaction-only service RPCs manage encrypted credentials and audit results to survive concurrent requests and stateless deployment.
