@@ -35,7 +35,12 @@ export const testShopeeConnection = createServerFn({ method: 'POST' }).middlewar
   if (readError) throw new Error('Não foi possível carregar sua conexão.');
   const { supabaseAdmin } = await import('@/integrations/supabase/client.server');
   const { data: pause, error: rateError } = await supabaseAdmin.rpc('reserve_connector_slot', { p_scope: `shopee-test:${context.userId}`, p_interval_ms: 60000 });
-  if (rateError || pause !== 0) return { status: 'temporary_error', message: 'Erro temporário, tente de novo', detail: 'Aguarde um minuto antes de testar novamente.', simulated: !connection?.credential_id };
+  if (rateError) throw new Error('Não foi possível aplicar a pausa de segurança.');
+  if (pause !== 0) {
+    const { error } = await supabaseAdmin.from('activity_log').insert({ user_id: context.userId, action: 'Conexão da Shopee testada', result: 'Teste adiado: aguarde um minuto', details: { rate_limited: true } });
+    if (error) throw new Error('Não foi possível registrar o teste.');
+    return { status: 'temporary_error', message: 'Erro temporário, tente de novo', detail: 'Aguarde um minuto antes de testar novamente.', simulated: !connection?.credential_id };
+  }
   const { ShopeeConnector, SimulatedMarketplaceConnector } = await import('./shopee.server');
   const credentialId = connection?.credential_id ?? null;
   let status = 'simulated'; let message = 'Modo de teste (dados simulados)'; let detail = 'Teste simulado concluído.';
@@ -66,7 +71,9 @@ export const testShopeeConnection = createServerFn({ method: 'POST' }).middlewar
     if (result.ok) { status = 'connected'; message = 'Conectado'; detail = 'A Shopee confirmou o acesso.'; }
     else { errors = result.errors; status = result.invalidCredentials ? 'invalid_credentials' : 'temporary_error'; message = result.invalidCredentials ? 'Credenciais inválidas ou ainda não liberadas' : 'Erro temporário, tente de novo'; detail = result.message; }
   } else await new SimulatedMarketplaceConnector().testConnection();
-  const { error: auditError } = await supabaseAdmin.rpc('shopee_record_test', { p_user_id: context.userId, p_credential_id: credentialId, p_status: status, p_result: message, p_details: { simulated: !credentialId, errors } });
+  const { error: auditError } = credentialId
+    ? await supabaseAdmin.rpc('shopee_record_test', { p_user_id: context.userId, p_credential_id: credentialId, p_status: status, p_result: message, p_details: { simulated: false, errors } })
+    : await supabaseAdmin.from('activity_log').insert({ user_id: context.userId, action: 'Conexão da Shopee testada', result: message, details: { simulated: true, errors } });
   if (auditError) throw new Error('O teste terminou, mas não foi possível registrar o resultado. Tente novamente mais tarde.');
   return { status, message, detail, simulated: !credentialId };
 });
