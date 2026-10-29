@@ -1,4 +1,5 @@
 // Server-only transport. Never import this module from a component.
+import { Kind, parse } from 'graphql';
 export const SHOPEE_ENDPOINT = 'https://open-api.affiliate.shopee.com.br/graphql';
 export const CONNECTION_QUERY = '{\nbrandOffer{\n    nodes{\n        commissionRate\n        offerName\n    }\n}\n}';
 export type Credentials = { appId: string; secret: string };
@@ -46,8 +47,13 @@ export type TransportOptions = {
 export class ShopeeConnector implements MarketplaceConnector {
   constructor(private credentials: Credentials, private options: TransportOptions) {}
   async execute(request: GraphRequest): Promise<GraphResult> {
+    try {
+      const operations = parse(request.query).definitions.filter(d => d.kind === Kind.OPERATION_DEFINITION);
+      if (operations.length === 0 || (operations.length > 1 && !request.operationName) || (request.operationName && !operations.some(op => op.name?.value === request.operationName))) throw new Error('Invalid operation');
+    } catch { return failure([{ message: 'Consulta inválida', path: [], extensions: { code: 10010, message: '' } }]); }
     // This exact string is signed and sent; never serialize again inside the loop.
     const payload = JSON.stringify(request);
+    if (encoder.encode(payload).byteLength > 65536) return failure([{ message: 'Consulta muito grande', path: [], extensions: { code: 10010, message: '' } }]);
     const wait = this.options.wait ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
     const attempts = Math.max(1, Math.min(this.options.maxAttempts ?? 3, 3));
     let result: GraphResult = failure([{ message: 'Sem resposta', path: [], extensions: { code: 10000, message: '' } }]);
@@ -63,8 +69,10 @@ export class ShopeeConnector implements MarketplaceConnector {
           const code = response.status === 429 ? 10030 : response.status >= 500 ? 10000 : response.status === 401 || response.status === 403 ? 10020 : 0;
           result = failure([{ message: `HTTP ${response.status}`, path: [], extensions: { code, message: '' } }]);
         } else {
-          const raw: unknown = await response.json();
-          if (!raw || typeof raw !== 'object') throw new Error('Invalid response');
+          let raw: unknown;
+          try { raw = await response.json(); }
+          catch { return failure([{ message: 'Resposta inválida da Shopee', path: [], extensions: { code: 0, message: '' } }]); }
+          if (!raw || typeof raw !== 'object') return failure([{ message: 'Resposta inválida da Shopee', path: [], extensions: { code: 0, message: '' } }]);
           const body = raw as { data?: unknown; errors?: unknown };
           if ('errors' in body) {
             const errors = Array.isArray(body.errors) && body.errors.length ? body.errors : [{}];
