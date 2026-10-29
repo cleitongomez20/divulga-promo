@@ -28,7 +28,7 @@ describe('Owner-scoped Shopee connections', () => {
     expect(mocks.rpc).toHaveBeenLastCalledWith('shopee_store_credentials', { p_user_id: 'owner', p_ciphertext: 'encrypted-only' });
   });
   it('removes only the authenticated owner credentials', async () => {
-    mocks.rpc.mockResolvedValueOnce({ error: null });
+    mocks.rpc.mockResolvedValueOnce({ data: 0, error: null }).mockResolvedValueOnce({ error: null });
     await invoke(removeShopeeCredentials, { context: { userId: 'owner', supabase: {} } });
     expect(mocks.rpc).toHaveBeenCalledWith('shopee_remove_credentials', { p_user_id: 'owner' });
   });

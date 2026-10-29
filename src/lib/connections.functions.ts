@@ -24,6 +24,8 @@ export const saveShopeeCredentials = createServerFn({ method: 'POST' }).middlewa
 
 export const removeShopeeCredentials = createServerFn({ method: 'POST' }).middleware([requireSupabaseAuth]).handler(async ({ context }) => {
   const { supabaseAdmin } = await import('@/integrations/supabase/client.server');
+  const { data: pause, error: rateError } = await supabaseAdmin.rpc('reserve_connector_slot', { p_scope: `shopee-edit:${context.userId}`, p_interval_ms: 3000 });
+  if (rateError || pause !== 0) throw new Error('Aguarde um pouco antes de remover a conexão.');
   const { error } = await supabaseAdmin.rpc('shopee_remove_credentials', { p_user_id: context.userId });
   if (error) throw new Error('Não foi possível remover a conexão.');
   return { ok: true };

@@ -1,4 +1,5 @@
 import type { Credentials } from './shopee.server';
+import { credentialsSchema } from './connections-schema';
 const encoder = new TextEncoder();
 async function encryptionKey(masterKey: string) {
   if (!masterKey) throw new Error('O armazenamento seguro ainda não está disponível.');
@@ -14,8 +15,7 @@ export async function encryptCredentials(credentials: Credentials, masterKey: st
 }
 export async function decryptCredentials(ciphertext: string, masterKey: string, userId: string): Promise<Credentials> {
   const bytes = Uint8Array.from(atob(ciphertext), c => c.charCodeAt(0));
+  if (bytes.length < 29) throw new Error('Credenciais inválidas.');
   const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: bytes.slice(0, 12), additionalData: encoder.encode(`shopee:${userId}:v1`) }, await encryptionKey(masterKey), bytes.slice(12));
-  const data = JSON.parse(new TextDecoder().decode(plain)) as Credentials;
-  if (typeof data.appId !== 'string' || typeof data.secret !== 'string') throw new Error('Credenciais inválidas.');
-  return data;
+  return credentialsSchema.parse(JSON.parse(new TextDecoder().decode(plain)));
 }

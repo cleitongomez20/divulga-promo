@@ -34,6 +34,17 @@ describe('Shopee official signing rules', () => {
     expect(init.body).toBe(JSON.stringify(request));
     expect(new Headers(init.headers).get('Authorization')).toBe(await authorization(credentials, 1577836800, String(init.body)));
   });
+  it('rejects multiple operations without operationName before sending', async () => {
+    const { client, fetcher } = setup([]);
+    const result = await client.execute({ query: 'query A { x } query B { y }' });
+    expect(result.ok).toBe(false); expect(fetcher).not.toHaveBeenCalled();
+    if (!result.ok) expect(result.errors[0]?.extensions.code).toBe(10010);
+  });
+  it('does not retry malformed responses', async () => {
+    const fetcher = vi.fn(async () => new Response('not JSON'));
+    const client = new ShopeeConnector(credentials, { fetcher, acquire: async () => true, slowDown: async () => {} });
+    expect((await client.testConnection()).ok).toBe(false); expect(fetcher).toHaveBeenCalledTimes(1);
+  });
 });
 describe('Shopee failures and conservative retries', () => {
   it.each([10010, 10020, 11000, 99999])('treats HTTP 200 errors %s as failures without automatic retries', async code => {
