@@ -32,7 +32,7 @@ function ConnectionsPage() {
   }
   async function testConnection() { setBusy('test'); setMessage(''); try { const result = await test(); await refresh(); setMessage(`${result.message}. ${result.detail}`); } catch { setMessage('Não foi possível testar agora. Tente novamente mais tarde.'); } finally { setBusy(''); } }
   async function removeConnection() { setBusy('remove'); setMessage(''); try { await remove(); setConfirmRemove(false); setEditing(false); setAppId(''); setSecret(''); await refresh(); setMessage('Conexão removida.'); } catch { setMessage('Não foi possível remover. Tente novamente.'); } finally { setBusy(''); } }
-  const status = !data.hasCredentials ? 'Não conectada' : data.status === 'connected' ? 'Conectado' : data.status === 'invalid_credentials' ? 'Confira as credenciais' : data.status === 'temporary_error' ? 'Teste não concluído' : 'Aguardando teste';
+  const status = !data.hasCredentials ? 'Não conectada' : data.status === 'connected' ? 'Conectado' : data.status === 'invalid_credentials' ? 'Confira as credenciais' : data.status === 'temporary_error' ? 'Teste não concluído' : data.status === 'awaiting_access' ? 'Aguardando liberação' : data.status === 'account_problem' ? 'Problema na conta de afiliado' : 'Aguardando teste';
   return <WorkspaceShell><p className="text-xs font-semibold uppercase tracking-widest text-primary">Suas contas</p><h1 className="mt-3 text-3xl font-bold">Conexões</h1>
     {!data.hasCredentials && <div role="status" className="mt-6 flex items-center gap-3 border-l-4 border-primary bg-accent p-4 text-sm font-medium text-accent-foreground"><FlaskConical className="size-5 shrink-0" />Modo de teste (dados simulados)</div>}
     <div className="mt-8 grid items-start gap-6 lg:grid-cols-2">
