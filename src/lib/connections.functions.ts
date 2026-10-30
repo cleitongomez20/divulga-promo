@@ -71,7 +71,7 @@ export const testShopeeConnection = createServerFn({ method: 'POST' }).middlewar
     });
     const result = await client.testConnection();
     if (result.ok) { status = 'connected'; message = 'Conectado'; detail = 'A Shopee confirmou o acesso.'; }
-    else { errors = result.errors; status = result.invalidCredentials ? 'invalid_credentials' : 'temporary_error'; message = result.invalidCredentials ? 'Credenciais inválidas ou ainda não liberadas' : 'Erro temporário, tente de novo'; detail = result.message; }
+    else { errors = result.errors; status = result.awaitingAccess ? 'awaiting_access' : result.accountProblem ? 'account_problem' : result.invalidCredentials ? 'invalid_credentials' : 'temporary_error'; message = result.awaitingAccess ? 'Aguardando liberação' : result.accountProblem ? 'Problema na conta de afiliado' : result.invalidCredentials ? 'Credenciais inválidas ou ainda não liberadas' : 'Erro temporário, tente de novo'; detail = result.message; }
   } else await new SimulatedMarketplaceConnector().testConnection();
   const { error: auditError } = credentialId
     ? await supabaseAdmin.rpc('shopee_record_test', { p_user_id: context.userId, p_credential_id: credentialId, p_status: status, p_result: message, p_details: { simulated: false, errors } })

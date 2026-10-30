@@ -5,7 +5,9 @@ export const CONNECTION_QUERY = '{\nbrandOffer{\n    nodes{\n        commissionR
 export type Credentials = { appId: string; secret: string };
 export type GraphRequest = { query: string; operationName?: string; variables?: Record<string, unknown> };
 export type SafeError = { message: string; path: (string | number)[]; extensions: { code: number; message: string } };
-export type GraphResult = { ok: true } | { ok: false; errors: SafeError[]; message: string; retryable: boolean; invalidCredentials: boolean };
+export type GraphFailure = { ok: false; errors: SafeError[]; message: string; retryable: boolean; invalidCredentials: boolean; accountProblem: boolean; awaitingAccess: boolean };
+export type GraphResult = { ok: true } | GraphFailure;
+export type GraphDataResult = { ok: true; data: Record<string, unknown> } | GraphFailure;
 export interface MarketplaceConnector { testConnection(): Promise<GraphResult> }
 
 const encoder = new TextEncoder();
@@ -25,20 +27,29 @@ export function redact(value: unknown, credentials: Credentials): string {
   }
   return text.slice(0, 2000);
 }
+export const ACCOUNT_PROBLEM_CODES = [10031, 10032, 10033, 10034];
 export function translateError(code: number, message: string) {
   switch (code) {
     case 10000: return 'A Shopee teve um problema. Tente de novo mais tarde.';
     case 10010: return 'Não foi possível fazer a consulta. Registramos o problema no histórico.';
     case 10020: return 'Confira seu AppId e Secret e a liberação na Shopee. O horário do servidor também precisa estar correto.';
-    case 10030: return 'A Shopee pediu uma pausa. Aguarde um pouco antes de tentar de novo.';
+    case 10030: return 'A Shopee pediu uma pausa. Vamos esperar um pouco e tentar de novo.';
+    case 10031: return 'A Shopee negou o acesso. Há um problema na sua conta de afiliado: fale com o suporte da Shopee.';
+    case 10032: return 'A Shopee não reconheceu seu cadastro de afiliado. Fale com o suporte da Shopee.';
+    case 10033: return 'Sua conta de afiliado na Shopee está congelada. Fale com o suporte da Shopee.';
+    case 10034: return 'Sua conta de afiliado na Shopee está bloqueada. Fale com o suporte da Shopee.';
+    case 10035: return 'Seu acesso à API da Shopee ainda não foi liberado.';
     case 11000: return message || 'A Shopee não conseguiu concluir o pedido.';
+    case 11001: return message ? `A Shopee recusou a consulta: ${message}` : 'A Shopee recusou os dados da consulta.';
+    case 11002: return message ? `Problema na vinculação da conta: ${message}` : 'A Shopee encontrou um problema na vinculação da sua conta.';
     default: return 'Não foi possível conectar à Shopee. Registramos o problema no histórico.';
   }
 }
-function failure(errors: SafeError[]): GraphResult {
+function failure(errors: SafeError[]): GraphFailure {
   const first = errors[0];
   const code = first?.extensions.code ?? 0;
-  return { ok: false, errors, message: translateError(code, first?.extensions.message || first?.message || ''), retryable: errors.length > 0 && errors.every(e => [10000, 10030].includes(e.extensions.code)), invalidCredentials: errors.some(e => e.extensions.code === 10020) };
+  const has = (list: number[]) => errors.some(e => list.includes(e.extensions.code));
+  return { ok: false, errors, message: translateError(code, first?.extensions.message || first?.message || ''), retryable: errors.length > 0 && errors.every(e => [10000, 10030].includes(e.extensions.code)), invalidCredentials: has([10020]), accountProblem: has(ACCOUNT_PROBLEM_CODES), awaitingAccess: has([10035]) };
 }
 export type TransportOptions = {
   fetcher?: typeof fetch; now?: () => number; wait?: (milliseconds: number) => Promise<void>;
@@ -46,7 +57,7 @@ export type TransportOptions = {
 };
 export class ShopeeConnector implements MarketplaceConnector {
   constructor(private credentials: Credentials, private options: TransportOptions) {}
-  async execute(request: GraphRequest): Promise<GraphResult> {
+  async execute(request: GraphRequest): Promise<GraphDataResult> {
     try {
       const operations = parse(request.query).definitions.filter(d => d.kind === Kind.OPERATION_DEFINITION);
       if (operations.length === 0 || (operations.length > 1 && !request.operationName) || (request.operationName && !operations.some(op => op.name?.value === request.operationName))) throw new Error('Invalid operation');
@@ -56,7 +67,7 @@ export class ShopeeConnector implements MarketplaceConnector {
     if (encoder.encode(payload).byteLength > 65536) return failure([{ message: 'Consulta muito grande', path: [], extensions: { code: 10010, message: '' } }]);
     const wait = this.options.wait ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
     const attempts = Math.max(1, Math.min(this.options.maxAttempts ?? 3, 3));
-    let result: GraphResult = failure([{ message: 'Sem resposta', path: [], extensions: { code: 10000, message: '' } }]);
+    let result: GraphDataResult = failure([{ message: 'Sem resposta', path: [], extensions: { code: 10000, message: '' } }]);
     for (let attempt = 0; attempt < attempts; attempt++) {
       if (!(await this.options.acquire())) return failure([{ message: 'Pausa de segurança', path: [], extensions: { code: 10030, message: '' } }]);
       const timestamp = Math.floor((this.options.now?.() ?? Date.now()) / 1000);
@@ -81,7 +92,7 @@ export class ShopeeConnector implements MarketplaceConnector {
               const ext = error['extensions'] && typeof error['extensions'] === 'object' ? error['extensions'] as Record<string, unknown> : {};
               return { message: redact(error['message'], this.credentials), path: Array.isArray(error['path']) ? error['path'].filter((p): p is string | number => typeof p === 'string' || typeof p === 'number').map(p => typeof p === 'string' ? redact(p, this.credentials) : p) : [], extensions: { code: typeof ext['code'] === 'number' ? ext['code'] : 0, message: redact(ext['message'], this.credentials) } };
             }));
-          } else result = body.data && typeof body.data === 'object' ? { ok: true } : failure([{ message: 'Resposta sem dados', path: [], extensions: { code: 0, message: '' } }]);
+          } else result = body.data && typeof body.data === 'object' ? { ok: true, data: body.data as Record<string, unknown> } : failure([{ message: 'Resposta sem dados', path: [], extensions: { code: 0, message: '' } }]);
         }
       } catch {
         // Never log fetch errors: they may contain request headers.
@@ -94,7 +105,7 @@ export class ShopeeConnector implements MarketplaceConnector {
     }
     return result;
   }
-  testConnection() { return this.execute({ query: CONNECTION_QUERY }); }
+  async testConnection(): Promise<GraphResult> { const r = await this.execute({ query: CONNECTION_QUERY }); return r.ok ? { ok: true } : r; }
 }
 export class SimulatedMarketplaceConnector implements MarketplaceConnector {
   async testConnection(): Promise<GraphResult> { return { ok: true }; }

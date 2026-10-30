@@ -469,43 +469,97 @@ export type Database = {
       }
       orders: {
         Row: {
+          attribution_type: string | null
+          clicked_at: string | null
           commission: number
+          commission_cents: number
+          completed_at: string | null
+          conversion_commission_cents: number
+          conversion_id: string
           created_at: string
           external_order_id: string
+          fraud_status: string | null
           id: string
+          item_id: string
+          item_image_url: string | null
+          item_name: string | null
+          item_notes: string | null
+          marketplace: string
           ordered_at: string | null
           post_id: string | null
           product_id: string | null
+          quantity: number | null
+          raw_order_status: string | null
+          shop_name: string | null
           status: string
           sub_id: string | null
+          sub_ids: string[]
+          synced_at: string
           updated_at: string
           user_id: string
+          utm_content: string | null
         }
         Insert: {
+          attribution_type?: string | null
+          clicked_at?: string | null
           commission?: number
+          commission_cents?: number
+          completed_at?: string | null
+          conversion_commission_cents?: number
+          conversion_id?: string
           created_at?: string
           external_order_id: string
+          fraud_status?: string | null
           id?: string
+          item_id?: string
+          item_image_url?: string | null
+          item_name?: string | null
+          item_notes?: string | null
+          marketplace?: string
           ordered_at?: string | null
           post_id?: string | null
           product_id?: string | null
+          quantity?: number | null
+          raw_order_status?: string | null
+          shop_name?: string | null
           status?: string
           sub_id?: string | null
+          sub_ids?: string[]
+          synced_at?: string
           updated_at?: string
           user_id: string
+          utm_content?: string | null
         }
         Update: {
+          attribution_type?: string | null
+          clicked_at?: string | null
           commission?: number
+          commission_cents?: number
+          completed_at?: string | null
+          conversion_commission_cents?: number
+          conversion_id?: string
           created_at?: string
           external_order_id?: string
+          fraud_status?: string | null
           id?: string
+          item_id?: string
+          item_image_url?: string | null
+          item_name?: string | null
+          item_notes?: string | null
+          marketplace?: string
           ordered_at?: string | null
           post_id?: string | null
           product_id?: string | null
+          quantity?: number | null
+          raw_order_status?: string | null
+          shop_name?: string | null
           status?: string
           sub_id?: string | null
+          sub_ids?: string[]
+          synced_at?: string
           updated_at?: string
           user_id?: string
+          utm_content?: string | null
         }
         Relationships: [
           {
@@ -850,6 +904,60 @@ export type Database = {
         }
         Relationships: []
       }
+      shopee_sync_state: {
+        Row: {
+          backfill_queued: boolean
+          created_at: string
+          failures: number
+          history_days: number
+          interval_minutes: number
+          last_periodic_at: string | null
+          last_reconcile_at: string | null
+          last_result: string | null
+          last_success_at: string | null
+          next_attempt_at: string | null
+          queue: Json
+          running_until: string | null
+          sub_id_separator: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          backfill_queued?: boolean
+          created_at?: string
+          failures?: number
+          history_days?: number
+          interval_minutes?: number
+          last_periodic_at?: string | null
+          last_reconcile_at?: string | null
+          last_result?: string | null
+          last_success_at?: string | null
+          next_attempt_at?: string | null
+          queue?: Json
+          running_until?: string | null
+          sub_id_separator?: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          backfill_queued?: boolean
+          created_at?: string
+          failures?: number
+          history_days?: number
+          interval_minutes?: number
+          last_periodic_at?: string | null
+          last_reconcile_at?: string | null
+          last_result?: string | null
+          last_success_at?: string | null
+          next_attempt_at?: string | null
+          queue?: Json
+          running_until?: string | null
+          sub_id_separator?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       subscriptions: {
         Row: {
           created_at: string
@@ -995,6 +1103,10 @@ export type Database = {
       shopee_store_credentials: {
         Args: { p_ciphertext: string; p_user_id: string }
         Returns: undefined
+      }
+      shopee_sync_lock: {
+        Args: { p_seconds: number; p_user_id: string }
+        Returns: boolean
       }
       slow_shopee_requests: { Args: never; Returns: undefined }
     }
