@@ -132,3 +132,25 @@ export class ShopeeConnector implements MarketplaceConnector {
 export class SimulatedMarketplaceConnector implements MarketplaceConnector {
   async testConnection(): Promise<GraphResult> { return { ok: true }; }
 }
+export type StepResult = { step: string; ok: boolean; elapsedMs: number; httpStatus?: number; summary: Record<string, unknown> };
+/** Network checks without credentials. Never returns the caller IP. */
+export async function networkSteps(fetcher: typeof fetch = fetch): Promise<StepResult[]> {
+  const steps: StepResult[] = [];
+  const timed = async (step: string, run: () => Promise<Omit<StepResult, 'step' | 'elapsedMs'>>) => {
+    const t = Date.now();
+    try { steps.push({ step, elapsedMs: 0, ...(await run()), ...{ elapsedMs: Date.now() - t } }); }
+    catch (e) { steps.push({ step, ok: false, elapsedMs: Date.now() - t, summary: { erro: errorName(e), mensagem: errorMessage(e).slice(0, 200) } }); }
+  };
+  await timed('Saída do servidor (Cloudflare)', async () => {
+    const r = await fetcher('https://www.cloudflare.com/cdn-cgi/trace', { signal: AbortSignal.timeout(10000), redirect: 'error' });
+    const fields = Object.fromEntries((await r.text()).split('\n').map(l => l.split('=')).filter(([k]) => k === 'loc' || k === 'colo' || k === 'http').map(([k, v]) => [k, (v ?? '').slice(0, 20)]));
+    return { ok: r.ok, httpStatus: r.status, summary: fields };
+  });
+  await timed('Shopee sem assinatura (espera erro 10020)', async () => {
+    const r = await fetcher(SHOPEE_ENDPOINT, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"query":"{__typename}"}', signal: AbortSignal.timeout(15000), redirect: 'error' });
+    const text = (await r.text()).slice(0, 1000);
+    let json: unknown = null; try { json = JSON.parse(text); } catch { /* not JSON */ }
+    return { ok: true, httpStatus: r.status, summary: json ? { resposta: json } : { corpo: text.slice(0, 200) } };
+  });
+  return steps;
+}
