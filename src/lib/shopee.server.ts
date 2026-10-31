@@ -138,7 +138,7 @@ export async function networkSteps(fetcher: typeof fetch = fetch): Promise<StepR
   const steps: StepResult[] = [];
   const timed = async (step: string, run: () => Promise<Omit<StepResult, 'step' | 'elapsedMs'>>) => {
     const t = Date.now();
-    try { steps.push({ step, elapsedMs: 0, ...(await run()), ...{ elapsedMs: Date.now() - t } }); }
+    try { { const r = await run(); steps.push({ step, ...r, elapsedMs: Date.now() - t }); } }
     catch (e) { steps.push({ step, ok: false, elapsedMs: Date.now() - t, summary: { erro: errorName(e), mensagem: errorMessage(e).slice(0, 200) } }); }
   };
   await timed('Saída do servidor (Cloudflare)', async () => {

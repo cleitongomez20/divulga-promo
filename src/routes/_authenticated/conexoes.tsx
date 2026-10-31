@@ -18,7 +18,7 @@ export const Route = createFileRoute('/_authenticated/conexoes')({
 function ConnectionsPage() {
   const { data } = useSuspenseQuery(connectionsQuery); const queryClient = useQueryClient();
   const save = useServerFn(saveShopeeCredentials); const remove = useServerFn(removeShopeeCredentials); const test = useServerFn(testShopeeConnection); const diagnose = useServerFn(runNetworkDiagnostic);
-  const [steps, setSteps] = useState<{ step: string; ok: boolean; elapsedMs: number; httpStatus?: number; summary: string }[]>([]);
+  const [steps, setSteps] = useState<{ step: string; ok: boolean; elapsedMs: number; httpStatus?: number | undefined; summary: string }[]>([]);
   const [editing, setEditing] = useState(false); const [busy, setBusy] = useState(''); const [message, setMessage] = useState('');
   const [confirmRemove, setConfirmRemove] = useState(false); const [appId, setAppId] = useState(''); const [secret, setSecret] = useState('');
   async function refresh() { await Promise.all([queryClient.invalidateQueries({ queryKey: ['connections'] }), queryClient.invalidateQueries({ queryKey: ['workspace'] })]); }
