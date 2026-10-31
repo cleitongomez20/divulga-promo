@@ -1,7 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
-import { authorization, signature, CONNECTION_QUERY, ShopeeConnector, SHOPEE_ENDPOINT, translateError, SimulatedMarketplaceConnector } from '@/lib/shopee.server';
+import { authorization, signature, CONNECTION_QUERY, ShopeeConnector, SHOPEE_ENDPOINT, translateError, SimulatedMarketplaceConnector, maskAppId } from '@/lib/shopee.server';
+import { credentialsSchema } from '@/lib/connections-schema';
 import { encryptCredentials, decryptCredentials } from '@/lib/connector-crypto.server';
 const credentials = { appId: '123456', secret: 'demo' };
+const OFFICIAL_QUERY = '{\nbrandOffer{\n    nodes{\n        commissionRate\n        offerName\n    }\n}\n}';
 const payload = '{"query":"{\\nbrandOffer{\\n    nodes{\\n        commissionRate\\n        offerName\\n    }\\n}\\n}"}';
 const expected = 'dc88d72feea70c80c52c3399751a7d34966763f51a7f056aa070a5e9df645412';
 function setup(responses: unknown[]) {
@@ -12,7 +14,8 @@ function setup(responses: unknown[]) {
 }
 describe('Shopee official signing rules', () => {
   it('matches exact official payload and SHA256 digest', async () => {
-    expect(JSON.stringify({ query: CONNECTION_QUERY })).toBe(payload);
+    expect(JSON.stringify({ query: OFFICIAL_QUERY })).toBe(payload);
+    expect(CONNECTION_QUERY).toContain('productOfferV2(keyword: "copo", limit: 1, page: 1)');
     expect(await signature(credentials, 1577836800, payload)).toBe(expected);
   });
   it('matches official singular Credential Authorization', async () => {
@@ -20,7 +23,7 @@ describe('Shopee official signing rules', () => {
   });
   it('sends the signed string unchanged using Unix seconds and server endpoint', async () => {
     const { client, fetcher } = setup([{ data: { brandOffer: { nodes: [] } } }]);
-    expect(await client.testConnection()).toEqual({ ok: true });
+    expect((await client.execute({ query: OFFICIAL_QUERY })).ok).toBe(true);
     const [url, init] = fetcher.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe(SHOPEE_ENDPOINT); expect(init.method).toBe('POST'); expect(init.body).toBe(payload);
     expect(new Headers(init.headers).get('Authorization')).toBe(`SHA256 Credential=123456, Timestamp=1577836800, Signature=${expected}`);
@@ -83,4 +86,25 @@ describe('Encrypted credentials', () => {
     const encrypted = await encryptCredentials(credentials, 'test-key-only', 'owner');
     await expect(decryptCredentials(encrypted, 'test-key-only', 'another-owner')).rejects.toThrow();
   });
+});describe('Connection diagnostics', () => {
+  it('reports timeouts with a safe reason and no secrets', async () => {
+    const fetcher = vi.fn(async () => { throw Object.assign(new Error('timed out demo'), { name: 'TimeoutError' }); });
+    const client = new ShopeeConnector(credentials, { fetcher, acquire: async () => true, slowDown: async () => {}, wait: async () => {} });
+    const r = await client.testConnection();
+    expect(r.ok).toBe(false);
+    if (!r.ok) { expect(r.message).toContain('Tempo esgotado'); expect(r.diagnostic).toMatchObject({ stage: 'durante o envio', errorName: 'TimeoutError' }); expect(JSON.stringify(r)).not.toContain('demo'); }
+  });
+  it('reports HTTP status with a redacted body snippet', async () => {
+    const fetcher = vi.fn(async () => new Response('blocked 123456 ' + 'x'.repeat(400), { status: 403 }));
+    const client = new ShopeeConnector(credentials, { fetcher, acquire: async () => true, slowDown: async () => {} });
+    const r = await client.testConnection();
+    if (!r.ok) { expect(r.diagnostic?.httpStatus).toBe(403); expect(r.diagnostic?.bodySnippet?.length).toBeLessThanOrEqual(200); expect(r.diagnostic?.bodySnippet).not.toContain('123456'); }
+  });
+  it('reports non-JSON responses distinctly', async () => {
+    const client = new ShopeeConnector(credentials, { fetcher: vi.fn(async () => new Response('<html>')), acquire: async () => true, slowDown: async () => {} });
+    const r = await client.testConnection();
+    if (!r.ok) expect(r.message).toContain('não é JSON');
+  });
+  it('masks the AppId keeping 3 first and 2 last digits', () => { expect(maskAppId('1234567890')).toBe('123•••••90'); });
+  it('trims the secret', () => { expect(credentialsSchema.parse({ appId: '1', secret: '  s  ' }).secret).toBe('s'); });
 });

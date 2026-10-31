@@ -78,7 +78,7 @@ export class ShopeeConnector implements MarketplaceConnector {
       const timestamp = Math.floor((this.options.now?.() ?? Date.now()) / 1000);
       const started = Date.now();
       const elapsed = () => Date.now() - started;
-      const fail = (code: number, message: string, diagnostic: Diagnostic) => ({ ...failure([{ message, path: [], extensions: { code, message: '' } }]), diagnostic });
+      const fail = (code: number, message: string, diagnostic: Diagnostic) => ({ ...failure([{ message, path: [], extensions: { code, message: '' } }]), message, diagnostic });
       let auth: string;
       try { auth = await authorization(this.credentials, timestamp, payload); }
       catch (e) { return fail(0, 'Não foi possível preparar o pedido à Shopee', { stage: 'antes de enviar', errorName: errorName(e), detail: redact(errorMessage(e), this.credentials), elapsedMs: elapsed() }); }
@@ -138,7 +138,7 @@ export async function networkSteps(fetcher: typeof fetch = fetch): Promise<StepR
   const steps: StepResult[] = [];
   const timed = async (step: string, run: () => Promise<Omit<StepResult, 'step' | 'elapsedMs'>>) => {
     const t = Date.now();
-    try { steps.push({ step, elapsedMs: 0, ...(await run()), ...{ elapsedMs: Date.now() - t } }); }
+    try { { const r = await run(); steps.push({ step, ...r, elapsedMs: Date.now() - t }); } }
     catch (e) { steps.push({ step, ok: false, elapsedMs: Date.now() - t, summary: { erro: errorName(e), mensagem: errorMessage(e).slice(0, 200) } }); }
   };
   await timed('Saída do servidor (Cloudflare)', async () => {

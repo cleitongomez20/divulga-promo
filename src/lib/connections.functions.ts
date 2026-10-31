@@ -60,7 +60,6 @@ export const testShopeeConnection = createServerFn({ method: 'POST' }).middlewar
 type Admin = Awaited<typeof import('@/integrations/supabase/client.server')>['supabaseAdmin'];
 async function signedTest(supabaseAdmin: Admin, userId: string, credentialId: string | null, action: string, extra: Record<string, unknown> = {}) {
   const { ShopeeConnector, SimulatedMarketplaceConnector } = await import('./shopee.server');
-  const credentialId = connection?.credential_id ?? null;
   let status = 'simulated'; let message = 'Modo de teste (dados simulados)'; let detail = 'Teste simulado concluído.';
   let errors: { message: string; path: (string | number)[]; extensions: { code: number; message: string } }[] = []; let diagnostic: unknown = null;
   if (credentialId) {
@@ -102,10 +101,11 @@ export const runNetworkDiagnostic = createServerFn({ method: 'POST' }).middlewar
   const { supabaseAdmin } = await import('@/integrations/supabase/client.server');
   const { data: pause, error: rateError } = await supabaseAdmin.rpc('reserve_connector_slot', { p_scope: `shopee-test:${context.userId}`, p_interval_ms: 60000 });
   if (rateError) throw new Error('Não foi possível aplicar a pausa de segurança.');
-  if (pause !== 0) return { status: 'temporary_error', message: 'Aguarde um minuto', detail: 'Espere um minuto antes de rodar o diagnóstico de novo.', simulated: !connection?.credential_id, steps: [] };
+  if (pause !== 0) return { status: 'temporary_error', message: 'Aguarde um minuto', detail: 'Espere um minuto antes de rodar o diagnóstico de novo.', simulated: !connection?.credential_id, steps: [] as { step: string; ok: boolean; elapsedMs: number; httpStatus?: number; summary: string }[] };
   const { networkSteps } = await import('./shopee.server');
   const steps = await networkSteps();
   const t = Date.now();
   const signed = await signedTest(supabaseAdmin, context.userId, connection?.credential_id ?? null, 'Diagnóstico de rede da Shopee', { steps });
-  return { ...signed, steps: [...steps, { step: 'Teste assinado', ok: signed.status === 'connected' || signed.status === 'simulated', elapsedMs: Date.now() - t, summary: { resultado: signed.message } }] };
+  const all = [...steps, { step: 'Teste assinado', ok: signed.status === 'connected' || signed.status === 'simulated', elapsedMs: Date.now() - t, summary: { resultado: signed.message } }];
+  return { ...signed, steps: all.map(st => ({ step: st.step, ok: st.ok, elapsedMs: st.elapsedMs, httpStatus: 'httpStatus' in st ? st.httpStatus : undefined, summary: JSON.stringify(st.summary, null, 2) })) };
 });

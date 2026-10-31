@@ -17,7 +17,7 @@ beforeEach(() => { vi.clearAllMocks(); vi.stubEnv('CONNECTOR_ENCRYPTION_KEY', 'u
 describe('Owner-scoped Shopee connections', () => {
   it('returns only safe metadata, never credentials or ciphertext', async () => {
     const client = ownerClient({ credential_id: 'private-row', status: 'saved', last_synced_at: null });
-    expect(await invoke(getConnections, { context: { userId: 'owner', supabase: client } })).toEqual({ hasCredentials: true, status: 'saved', lastTestAt: null });
+    expect(await invoke(getConnections, { context: { userId: 'owner', supabase: client } })).toEqual({ hasCredentials: true, status: 'saved', lastTestAt: null, maskedAppId: null });
     expect(client.eq).toHaveBeenCalledWith('user_id', 'owner'); expect(client.eq).toHaveBeenCalledWith('marketplace', 'shopee');
   });
   it('saves encrypted credentials bound to the authenticated owner only', async () => {
