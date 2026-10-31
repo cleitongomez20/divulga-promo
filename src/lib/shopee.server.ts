@@ -78,7 +78,7 @@ export class ShopeeConnector implements MarketplaceConnector {
       const timestamp = Math.floor((this.options.now?.() ?? Date.now()) / 1000);
       const started = Date.now();
       const elapsed = () => Date.now() - started;
-      const fail = (code: number, message: string, diagnostic: Diagnostic) => ({ ...failure([{ message, path: [], extensions: { code, message: '' } }]), diagnostic });
+      const fail = (code: number, message: string, diagnostic: Diagnostic) => ({ ...failure([{ message, path: [], extensions: { code, message: '' } }]), message, diagnostic });
       let auth: string;
       try { auth = await authorization(this.credentials, timestamp, payload); }
       catch (e) { return fail(0, 'Não foi possível preparar o pedido à Shopee', { stage: 'antes de enviar', errorName: errorName(e), detail: redact(errorMessage(e), this.credentials), elapsedMs: elapsed() }); }

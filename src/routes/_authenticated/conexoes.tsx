@@ -18,7 +18,7 @@ export const Route = createFileRoute('/_authenticated/conexoes')({
 function ConnectionsPage() {
   const { data } = useSuspenseQuery(connectionsQuery); const queryClient = useQueryClient();
   const save = useServerFn(saveShopeeCredentials); const remove = useServerFn(removeShopeeCredentials); const test = useServerFn(testShopeeConnection); const diagnose = useServerFn(runNetworkDiagnostic);
-  const [steps, setSteps] = useState<{ step: string; ok: boolean; elapsedMs: number; httpStatus?: number; summary: Record<string, unknown> }[]>([]);
+  const [steps, setSteps] = useState<{ step: string; ok: boolean; elapsedMs: number; httpStatus?: number; summary: string }[]>([]);
   const [editing, setEditing] = useState(false); const [busy, setBusy] = useState(''); const [message, setMessage] = useState('');
   const [confirmRemove, setConfirmRemove] = useState(false); const [appId, setAppId] = useState(''); const [secret, setSecret] = useState('');
   async function refresh() { await Promise.all([queryClient.invalidateQueries({ queryKey: ['connections'] }), queryClient.invalidateQueries({ queryKey: ['workspace'] })]); }
@@ -49,7 +49,7 @@ function ConnectionsPage() {
         {confirmRemove && <div className="mt-5 border-t pt-5"><p className="text-sm">Remover as credenciais da Shopee?</p><div className="mt-3 flex flex-wrap gap-2"><Button variant="destructive" disabled={Boolean(busy)} onClick={removeConnection}>Sim, remover</Button><Button variant="ghost" disabled={Boolean(busy)} onClick={() => setConfirmRemove(false)}>Cancelar</Button></div></div>}
         {data.lastTestAt && <p className="mt-5 text-xs text-muted-foreground">Último teste: {new Date(data.lastTestAt).toLocaleString('pt-BR')}</p>}
         {message && <p role="status" className="mt-5 break-words text-sm leading-relaxed">{message}</p>}
-        {steps.length > 0 && <ol className="mt-4 space-y-3 border-t pt-4 text-sm">{steps.map(st => <li key={st.step}><p className="font-semibold">{st.ok ? '✓' : '✗'} {st.step} <span className="font-normal text-muted-foreground">({st.elapsedMs} ms{st.httpStatus ? ` · HTTP ${st.httpStatus}` : ''})</span></p><pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words rounded bg-muted p-2 text-xs">{JSON.stringify(st.summary, null, 2)}</pre></li>)}</ol>}
+        {steps.length > 0 && <ol className="mt-4 space-y-3 border-t pt-4 text-sm">{steps.map(st => <li key={st.step}><p className="font-semibold">{st.ok ? '✓' : '✗'} {st.step} <span className="font-normal text-muted-foreground">({st.elapsedMs} ms{st.httpStatus ? ` · HTTP ${st.httpStatus}` : ''})</span></p><pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words rounded bg-muted p-2 text-xs">{st.summary}</pre></li>)}</ol>}
       </section>
       <section className="rounded-lg border bg-card p-5 sm:p-7"><div className="flex items-center justify-between gap-4"><div className="flex items-center gap-3"><Instagram className="size-7 text-muted-foreground" /><h2 className="text-xl font-semibold">Instagram</h2></div><span className="text-sm text-muted-foreground">Em breve</span></div></section>
     </div>
