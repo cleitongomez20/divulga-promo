@@ -1,11 +1,12 @@
 // Server-only transport. Never import this module from a component.
 import { Kind, parse } from 'graphql';
 export const SHOPEE_ENDPOINT = 'https://open-api.affiliate.shopee.com.br/graphql';
-export const CONNECTION_QUERY = '{\nbrandOffer{\n    nodes{\n        commissionRate\n        offerName\n    }\n}\n}';
+export const CONNECTION_QUERY = '{ productOfferV2(keyword: "copo", limit: 1, page: 1) { nodes { itemId productName } pageInfo { hasNextPage } } }';
 export type Credentials = { appId: string; secret: string };
 export type GraphRequest = { query: string; operationName?: string; variables?: Record<string, unknown> };
 export type SafeError = { message: string; path: (string | number)[]; extensions: { code: number; message: string } };
-export type GraphFailure = { ok: false; errors: SafeError[]; message: string; retryable: boolean; invalidCredentials: boolean; accountProblem: boolean; awaitingAccess: boolean };
+export type Diagnostic = { stage: 'antes de enviar' | 'durante o envio' | 'resposta'; errorName: string; detail: string; elapsedMs: number; httpStatus?: number; bodySnippet?: string };
+export type GraphFailure = { ok: false; errors: SafeError[]; message: string; retryable: boolean; invalidCredentials: boolean; accountProblem: boolean; awaitingAccess: boolean; diagnostic?: Diagnostic };
 export type GraphResult = { ok: true } | GraphFailure;
 export type GraphDataResult = { ok: true; data: Record<string, unknown> } | GraphFailure;
 export interface MarketplaceConnector { testConnection(): Promise<GraphResult> }
@@ -55,6 +56,10 @@ export type TransportOptions = {
   fetcher?: typeof fetch; now?: () => number; wait?: (milliseconds: number) => Promise<void>;
   acquire: () => Promise<boolean>; slowDown: () => Promise<void>; maxAttempts?: number; retryBaseMs?: number;
 };
+const errorName = (e: unknown) => (e && typeof e === 'object' && 'name' in e && typeof e.name === 'string' ? e.name : 'Error').slice(0, 40);
+const errorMessage = (e: unknown) => (e && typeof e === 'object' && 'message' in e && typeof e.message === 'string' ? e.message : '');
+/** Masks an AppId: first 3 and last 2 digits. */
+export function maskAppId(appId: string) { return appId.length <= 5 ? '•'.repeat(appId.length) : `${appId.slice(0, 3)}${'•'.repeat(appId.length - 5)}${appId.slice(-2)}`; }
 export class ShopeeConnector implements MarketplaceConnector {
   constructor(private credentials: Credentials, private options: TransportOptions) {}
   async execute(request: GraphRequest): Promise<GraphDataResult> {
@@ -71,19 +76,39 @@ export class ShopeeConnector implements MarketplaceConnector {
     for (let attempt = 0; attempt < attempts; attempt++) {
       if (!(await this.options.acquire())) return failure([{ message: 'Pausa de segurança', path: [], extensions: { code: 10030, message: '' } }]);
       const timestamp = Math.floor((this.options.now?.() ?? Date.now()) / 1000);
+      const started = Date.now();
+      const elapsed = () => Date.now() - started;
+      const fail = (code: number, message: string, diagnostic: Diagnostic) => ({ ...failure([{ message, path: [], extensions: { code, message: '' } }]), diagnostic });
+      let auth: string;
+      try { auth = await authorization(this.credentials, timestamp, payload); }
+      catch (e) { return fail(0, 'Não foi possível preparar o pedido à Shopee', { stage: 'antes de enviar', errorName: errorName(e), detail: redact(errorMessage(e), this.credentials), elapsedMs: elapsed() }); }
+      let response: Response;
       try {
-        const response = await (this.options.fetcher ?? fetch)(SHOPEE_ENDPOINT, {
-          method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: await authorization(this.credentials, timestamp, payload) },
+        response = await (this.options.fetcher ?? fetch)(SHOPEE_ENDPOINT, {
+          method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: auth },
           body: payload, signal: AbortSignal.timeout(15000), redirect: 'error',
         });
+      } catch (e) {
+        // Only the error name and a redacted short message are kept; headers are never logged.
+        const name = errorName(e); const detail = redact(errorMessage(e), this.credentials).slice(0, 200);
+        const redirectRefused = /redirect/i.test(detail);
+        const message = name === 'TimeoutError' || name === 'AbortError' ? 'Tempo esgotado: a Shopee não respondeu em 15 segundos'
+          : redirectRefused ? 'A Shopee tentou redirecionar o pedido e recusamos por segurança'
+          : 'Falha de rede ou conexão bloqueada até a Shopee';
+        result = fail(10000, message, { stage: 'durante o envio', errorName: name, detail, elapsedMs: elapsed() });
+        if (redirectRefused) return result;
+        response = undefined as never;
+      }
+      if (response) {
+        const text = await response.text().catch(() => '');
+        const snippet = redact(text, this.credentials).slice(0, 200);
         if (!response.ok) {
           const code = response.status === 429 ? 10030 : response.status >= 500 ? 10000 : response.status === 401 || response.status === 403 ? 10020 : 0;
-          result = failure([{ message: `HTTP ${response.status}`, path: [], extensions: { code, message: '' } }]);
+          result = fail(code, `A Shopee respondeu com erro HTTP ${response.status}`, { stage: 'resposta', errorName: 'HTTP', detail: `HTTP ${response.status}`, elapsedMs: elapsed(), httpStatus: response.status, bodySnippet: snippet });
         } else {
           let raw: unknown;
-          try { raw = await response.json(); }
-          catch { return failure([{ message: 'Resposta inválida da Shopee', path: [], extensions: { code: 0, message: '' } }]); }
-          if (!raw || typeof raw !== 'object') return failure([{ message: 'Resposta inválida da Shopee', path: [], extensions: { code: 0, message: '' } }]);
+          try { raw = JSON.parse(text); } catch { raw = undefined; }
+          if (!raw || typeof raw !== 'object') return fail(0, 'A Shopee enviou uma resposta que não é JSON', { stage: 'resposta', errorName: 'NotJSON', detail: 'Resposta não é JSON', elapsedMs: elapsed(), httpStatus: response.status, bodySnippet: snippet });
           const body = raw as { data?: unknown; errors?: unknown };
           if ('errors' in body) {
             const errors = Array.isArray(body.errors) && body.errors.length ? body.errors : [{}];
@@ -94,9 +119,6 @@ export class ShopeeConnector implements MarketplaceConnector {
             }));
           } else result = body.data && typeof body.data === 'object' ? { ok: true, data: body.data as Record<string, unknown> } : failure([{ message: 'Resposta sem dados', path: [], extensions: { code: 0, message: '' } }]);
         }
-      } catch {
-        // Never log fetch errors: they may contain request headers.
-        result = failure([{ message: 'Sem resposta da Shopee', path: [], extensions: { code: 10000, message: '' } }]);
       }
       if (result.ok) return result;
       if (result.errors.some(e => e.extensions.code === 10030)) await this.options.slowDown();
