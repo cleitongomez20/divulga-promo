@@ -10,7 +10,7 @@ export const getWorkspace = createServerFn({ method: 'GET' }).middleware([requir
   const [profile, settings, logs] = await Promise.all([
     supabase.from('profiles').select('name,timezone').eq('id', userId).single(),
     supabase.from('settings').select('*').eq('user_id', userId).single(),
-    supabase.from('activity_log').select('id,action,result,created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(100),
+    supabase.from('activity_log').select('id,action,result,details,created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(100),
   ]);
   if (profile.error || settings.error || logs.error) throw new Error('Não foi possível carregar sua conta. Tente novamente.');
   return { isAdmin, profile: profile.data, settings: settings.data, logs: logs.data ?? [] };
