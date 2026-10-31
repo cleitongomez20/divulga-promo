@@ -9,4 +9,6 @@
 - [ ] B1 authenticated verification including successful password login and audit readback: external Supabase has one account, but no managed test session or usable sign-in credentials; owner must test their login. No authenticator required.
 - [ ] Owner settings: verify email login and enable signup, configure redirect URLs and login rate limits; enable leaked-password protection (security scan informational finding). External hosted Auth configuration cannot be changed with available tools.
 - [x] Owner authorized B2a explicitly; previous B1 owner-only checks remain unverified above.
+- [x] B2b-1: conversionReport sync (non-deprecated fields, scrollId paging, 30s rule, lock, idempotent per-item upsert, cents, sub IDs, status/fraud), expanded error codes incl. 'Aguardando liberação', painel with real/simulated sales and 'Atualizar agora'. 56 tests pass; quick scan only leaked-password info.
+- [ ] B2b-1 automatic schedule: protected route /api/public/shopee-sync is ready, but database-side HTTP scheduling is not supported for this external Supabase; needs owner decision on an external scheduler and the SHOPEE_SYNC_SECRET secret. Sub ID separator unverified until first real sale.
 - [ ] B2b–B9: Later steps, only after owner test and approval of the preceding step.

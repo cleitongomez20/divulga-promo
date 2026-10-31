@@ -43,8 +43,8 @@ describe('pagination', () => {
     expect(execute.mock.calls[1]![0].query).toContain('scrollId: "s1"');
   });
   it('stops when the scrollId would be older than 30 seconds', async () => {
-    let t = 0; const execute = vi.fn(async () => { t += 40_000; return { ok: true as const, data: { conversionReport: { nodes: [], pageInfo: { hasNextPage: true, scrollId: 's' } } } }; });
-    const r = await fetchConversionPages(execute, win, () => t);
+    let t = 0; const execute = vi.fn(async () => { return { ok: true as const, data: { conversionReport: { nodes: [], pageInfo: { hasNextPage: true, scrollId: 's' } } } }; });
+    const r = await fetchConversionPages(execute, win, () => (t += 40_000));
     expect(r.ok).toBe(false); expect('expired' in r).toBe(true); expect(execute).toHaveBeenCalledTimes(1);
   });
 });
