@@ -5,7 +5,18 @@ import { credentialsSchema } from './connections-schema';
 export const getConnections = createServerFn({ method: 'GET' }).middleware([requireSupabaseAuth]).handler(async ({ context }) => {
   const { data, error } = await context.supabase.from('marketplace_connections').select('status,credential_id,last_synced_at').eq('user_id', context.userId).eq('marketplace', 'shopee').maybeSingle();
   if (error) throw new Error('Não foi possível carregar suas conexões.');
-  return { hasCredentials: Boolean(data?.credential_id), status: data?.status ?? 'disconnected', lastTestAt: data?.last_synced_at ?? null };
+  let maskedAppId: string | null = null;
+  const key = process.env['CONNECTOR_ENCRYPTION_KEY'];
+  if (data?.credential_id && key) {
+    try {
+      const { supabaseAdmin } = await import('@/integrations/supabase/client.server');
+      const { data: stored } = await supabaseAdmin.from('connector_secrets').select('ciphertext').eq('id', data.credential_id).eq('user_id', context.userId).single();
+      const { decryptCredentials } = await import('./connector-crypto.server');
+      const { maskAppId } = await import('./shopee.server');
+      if (stored) maskedAppId = maskAppId((await decryptCredentials(stored.ciphertext, key, context.userId)).appId);
+    } catch { maskedAppId = null; }
+  }
+  return { hasCredentials: Boolean(data?.credential_id), status: data?.status ?? 'disconnected', lastTestAt: data?.last_synced_at ?? null, maskedAppId };
 });
 
 export const saveShopeeCredentials = createServerFn({ method: 'POST' }).middleware([requireSupabaseAuth])
@@ -43,18 +54,23 @@ export const testShopeeConnection = createServerFn({ method: 'POST' }).middlewar
     if (error) throw new Error('Não foi possível registrar o teste.');
     return { status: 'temporary_error', message: 'Erro temporário, tente de novo', detail: 'Aguarde um minuto antes de testar novamente.', simulated: !connection?.credential_id };
   }
+  return signedTest(supabaseAdmin, context.userId, connection?.credential_id ?? null, 'Conexão da Shopee testada');
+});
+
+type Admin = Awaited<typeof import('@/integrations/supabase/client.server')>['supabaseAdmin'];
+async function signedTest(supabaseAdmin: Admin, userId: string, credentialId: string | null, action: string, extra: Record<string, unknown> = {}) {
   const { ShopeeConnector, SimulatedMarketplaceConnector } = await import('./shopee.server');
   const credentialId = connection?.credential_id ?? null;
   let status = 'simulated'; let message = 'Modo de teste (dados simulados)'; let detail = 'Teste simulado concluído.';
-  let errors: { message: string; path: (string | number)[]; extensions: { code: number; message: string } }[] = [];
+  let errors: { message: string; path: (string | number)[]; extensions: { code: number; message: string } }[] = []; let diagnostic: unknown = null;
   if (credentialId) {
     const key = process.env['CONNECTOR_ENCRYPTION_KEY'];
     if (!key) throw new Error('O armazenamento seguro ainda não está disponível.');
-    const { data: stored, error: secretError } = await supabaseAdmin.from('connector_secrets').select('ciphertext,key_version').eq('id', credentialId).eq('user_id', context.userId).single();
+    const { data: stored, error: secretError } = await supabaseAdmin.from('connector_secrets').select('ciphertext,key_version').eq('id', credentialId).eq('user_id', userId).single();
     if (secretError || !stored || stored.key_version !== 1) throw new Error('Não foi possível abrir a conexão. Salve suas credenciais novamente.');
     const { decryptCredentials } = await import('./connector-crypto.server');
     let credentials;
-    try { credentials = await decryptCredentials(stored.ciphertext, key, context.userId); }
+    try { credentials = await decryptCredentials(stored.ciphertext, key, userId); }
     catch { throw new Error('Não foi possível abrir a conexão. Salve suas credenciais novamente.'); }
     const wait = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
     const client = new ShopeeConnector(credentials, {
@@ -71,11 +87,25 @@ export const testShopeeConnection = createServerFn({ method: 'POST' }).middlewar
     });
     const result = await client.testConnection();
     if (result.ok) { status = 'connected'; message = 'Conectado'; detail = 'A Shopee confirmou o acesso.'; }
-    else { errors = result.errors; status = result.awaitingAccess ? 'awaiting_access' : result.accountProblem ? 'account_problem' : result.invalidCredentials ? 'invalid_credentials' : 'temporary_error'; message = result.awaitingAccess ? 'Aguardando liberação' : result.accountProblem ? 'Problema na conta de afiliado' : result.invalidCredentials ? 'Credenciais inválidas ou ainda não liberadas' : 'Erro temporário, tente de novo'; detail = result.message; }
+    else { errors = result.errors; diagnostic = result.diagnostic ?? null; status = result.awaitingAccess ? 'awaiting_access' : result.accountProblem ? 'account_problem' : result.invalidCredentials ? 'invalid_credentials' : 'temporary_error'; message = result.awaitingAccess ? 'Aguardando liberação' : result.accountProblem ? 'Problema na conta de afiliado' : result.invalidCredentials ? 'Credenciais inválidas ou ainda não liberadas' : 'Erro temporário, tente de novo'; detail = result.message; }
   } else await new SimulatedMarketplaceConnector().testConnection();
   const { error: auditError } = credentialId
-    ? await supabaseAdmin.rpc('shopee_record_test', { p_user_id: context.userId, p_credential_id: credentialId, p_status: status, p_result: message, p_details: { simulated: false, errors } })
-    : await supabaseAdmin.from('activity_log').insert({ user_id: context.userId, action: 'Conexão da Shopee testada', result: message, details: { simulated: true, errors } });
+    ? await supabaseAdmin.rpc('shopee_record_test', { p_user_id: userId, p_credential_id: credentialId, p_status: status, p_result: action === 'Conexão da Shopee testada' ? message : `Diagnóstico: ${message}`, p_details: { simulated: false, errors, diagnostic, ...extra } as never })
+    : await supabaseAdmin.from('activity_log').insert({ user_id: userId, action, result: message, details: { simulated: true, errors, ...extra } as never });
   if (auditError) throw new Error('O teste terminou, mas não foi possível registrar o resultado. Tente novamente mais tarde.');
   return { status, message, detail, simulated: !credentialId };
+}
+
+export const runNetworkDiagnostic = createServerFn({ method: 'POST' }).middleware([requireSupabaseAuth]).handler(async ({ context }) => {
+  const { data: connection, error: readError } = await context.supabase.from('marketplace_connections').select('credential_id').eq('user_id', context.userId).eq('marketplace', 'shopee').maybeSingle();
+  if (readError) throw new Error('Não foi possível carregar sua conexão.');
+  const { supabaseAdmin } = await import('@/integrations/supabase/client.server');
+  const { data: pause, error: rateError } = await supabaseAdmin.rpc('reserve_connector_slot', { p_scope: `shopee-test:${context.userId}`, p_interval_ms: 60000 });
+  if (rateError) throw new Error('Não foi possível aplicar a pausa de segurança.');
+  if (pause !== 0) return { status: 'temporary_error', message: 'Aguarde um minuto', detail: 'Espere um minuto antes de rodar o diagnóstico de novo.', simulated: !connection?.credential_id, steps: [] };
+  const { networkSteps } = await import('./shopee.server');
+  const steps = await networkSteps();
+  const t = Date.now();
+  const signed = await signedTest(supabaseAdmin, context.userId, connection?.credential_id ?? null, 'Diagnóstico de rede da Shopee', { steps });
+  return { ...signed, steps: [...steps, { step: 'Teste assinado', ok: signed.status === 'connected' || signed.status === 'simulated', elapsedMs: Date.now() - t, summary: { resultado: signed.message } }] };
 });
