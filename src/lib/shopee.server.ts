@@ -60,6 +60,19 @@ const errorName = (e: unknown) => (e && typeof e === 'object' && 'name' in e && 
 const errorMessage = (e: unknown) => (e && typeof e === 'object' && 'message' in e && typeof e.message === 'string' ? e.message : '');
 /** Masks an AppId: first 3 and last 2 digits. */
 export function maskAppId(appId: string) { return appId.length <= 5 ? '•'.repeat(appId.length) : `${appId.slice(0, 3)}${'•'.repeat(appId.length - 5)}${appId.slice(-2)}`; }
+const REDIRECT_STATUSES = [301, 302, 303, 307, 308];
+const isRedirect = (status: number) => REDIRECT_STATUSES.includes(status);
+const ENDPOINT_HOST = new URL(SHOPEE_ENDPOINT).host;
+/** Says where a redirect points. The label never includes the query string, which could carry tokens. */
+export function describeRedirect(response: Response): { sameHost: boolean; url: string | null; label: string } {
+  const location = response.headers.get('location') ?? '';
+  if (!location) return { sameHost: false, url: null, label: 'sem destino informado' };
+  try {
+    const target = new URL(location, SHOPEE_ENDPOINT);
+    const sameHost = target.protocol === 'https:' && target.host === ENDPOINT_HOST;
+    return { sameHost, url: sameHost ? target.toString() : null, label: `${target.host}${target.pathname}`.slice(0, 120) };
+  } catch { return { sameHost: false, url: null, label: 'endereço desconhecido' }; }
+}
 export class ShopeeConnector implements MarketplaceConnector {
   constructor(private credentials: Credentials, private options: TransportOptions) {}
   async execute(request: GraphRequest): Promise<GraphDataResult> {
@@ -84,10 +97,20 @@ export class ShopeeConnector implements MarketplaceConnector {
       catch (e) { return fail(0, 'Não foi possível preparar o pedido à Shopee', { stage: 'antes de enviar', errorName: errorName(e), detail: redact(errorMessage(e), this.credentials), elapsedMs: elapsed() }); }
       let response: Response;
       try {
-        response = await (this.options.fetcher ?? fetch)(SHOPEE_ENDPOINT, {
+        const send = (url: string) => (this.options.fetcher ?? fetch)(url, {
           method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: auth },
-          body: payload, signal: AbortSignal.timeout(15000), redirect: 'error',
+          body: payload, signal: AbortSignal.timeout(15000), redirect: 'manual',
         });
+        response = await send(SHOPEE_ENDPOINT);
+        if (isRedirect(response.status)) {
+          // One hop at most, and only to the same Shopee host over HTTPS: the same signed request is re-sent unchanged.
+          const first = describeRedirect(response);
+          if (first.sameHost && first.url) response = await send(first.url);
+          if (isRedirect(response.status)) {
+            const last = describeRedirect(response);
+            return fail(0, `A Shopee redirecionou o pedido (HTTP ${response.status} para ${last.label}) e não seguimos por segurança`, { stage: 'resposta', errorName: 'Redirect', detail: `HTTP ${response.status} para ${last.label}`, elapsedMs: elapsed(), httpStatus: response.status });
+          }
+        }
       } catch (e) {
         // Only the error name and a redacted short message are kept; headers are never logged.
         const name = errorName(e); const detail = redact(errorMessage(e), this.credentials).slice(0, 200);
@@ -147,7 +170,8 @@ export async function networkSteps(fetcher: typeof fetch = fetch): Promise<StepR
     return { ok: r.ok, httpStatus: r.status, summary: fields };
   });
   await timed('Shopee sem assinatura (espera erro 10020)', async () => {
-    const r = await fetcher(SHOPEE_ENDPOINT, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"query":"{__typename}"}', signal: AbortSignal.timeout(15000), redirect: 'error' });
+    const r = await fetcher(SHOPEE_ENDPOINT, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"query":"{__typename}"}', signal: AbortSignal.timeout(15000), redirect: 'manual' });
+    if (isRedirect(r.status)) return { ok: false, httpStatus: r.status, summary: { redirecionou_para: describeRedirect(r).label } };
     const text = (await r.text()).slice(0, 1000);
     let json: unknown = null; try { json = JSON.parse(text); } catch { /* not JSON */ }
     return { ok: true, httpStatus: r.status, summary: json ? { resposta: json } : { corpo: text.slice(0, 200) } };
