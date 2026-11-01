@@ -10,9 +10,27 @@ export type OrderStatus = 'pending' | 'completed' | 'cancelled';
 export type SyncWindow = { field: 'purchase' | 'complete'; start: number; end: number };
 
 // Only fields not marked "To Be Removed" in the official docs.
-const NODE_FIELDS = 'purchaseTime clickTime conversionId totalCommission netCommission shopeeCommissionCapped sellerCommission buyerType utmContent device referrer campaignType orders { orderId orderStatus shopType items { itemId itemName itemPrice actualAmount qty imageUrl shopId shopName itemTotalCommission itemSellerCommission itemSellerCommissionRate itemShopeeCommissionCapped itemShopeeCommissionRate itemNotes channelType attributionType fraudStatus displayItemStatus completeTime modelId } }';
+const NODE_FIELDS = 'purchaseTime clickTime conversionId totalCommission netCommission shopeeCommissionCapped sellerCommission buyerType utmContent device referrer orders { orderId orderStatus shopType items { itemId itemName itemPrice actualAmount qty imageUrl shopId shopName itemTotalCommission itemSellerCommission itemSellerCommissionRate itemShopeeCommissionCapped itemShopeeCommissionRate itemNotes channelType attributionType fraudStatus completeTime modelId } }';
 
-export function buildConversionQuery(window: SyncWindow, scrollId?: string) {
+// Never dropped automatically: without these the sync cannot identify or page the data.
+const ESSENTIAL_FIELDS = new Set(['nodes', 'pageInfo', 'orders', 'items', 'conversionId', 'orderId', 'itemId', 'hasNextPage', 'scrollId', 'limit']);
+
+/** Reads Shopee's "Cannot query field" validation error and returns the field that can be dropped, or null. */
+export function unknownFieldName(message: string): string | null {
+  const match = /Cannot query field "([A-Za-z][A-Za-z0-9_]*)"/.exec(message);
+  return match && !ESSENTIAL_FIELDS.has(match[1] as string) ? (match[1] as string) : null;
+}
+
+function fieldsWithout(omit: readonly string[]) {
+  let fields = NODE_FIELDS;
+  for (const name of omit) {
+    if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(name) || ESSENTIAL_FIELDS.has(name)) continue;
+    fields = fields.replace(new RegExp(`(?<![A-Za-z0-9_])${name}(?![A-Za-z0-9_])\\s*`, 'g'), '');
+  }
+  return fields;
+}
+
+export function buildConversionQuery(window: SyncWindow, scrollId?: string, omit: readonly string[] = []) {
   const start = Math.floor(window.start), end = Math.floor(window.end);
   if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end <= start) throw new Error('Invalid window');
   const prefix = window.field === 'purchase' ? 'purchaseTime' : 'completeTime';
@@ -21,7 +39,7 @@ export function buildConversionQuery(window: SyncWindow, scrollId?: string) {
     if (!/^[\w\-=+/.:]{1,512}$/.test(scrollId)) throw new Error('Invalid scrollId');
     args.push(`scrollId: ${JSON.stringify(scrollId)}`);
   }
-  return `{\n  conversionReport(${args.join(', ')}) {\n    nodes { ${NODE_FIELDS} }\n    pageInfo { limit hasNextPage scrollId }\n  }\n}`;
+  return `{\n  conversionReport(${args.join(', ')}) {\n    nodes { ${fieldsWithout(omit)} }\n    pageInfo { limit hasNextPage scrollId }\n  }\n}`;
 }
 
 /** Money arrives as text. Convert to integer cents without floats. */

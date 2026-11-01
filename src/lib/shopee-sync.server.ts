@@ -1,30 +1,46 @@
 // Server-only: conversion sync for Shopee. Never import from components.
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Database, Json } from '@/integrations/supabase/types';
-import { buildConversionQuery, flattenConversions, planQueue, FRESH_QUERY_GAP_MS, SCROLL_TTL_MS, WINDOW_DAYS, DAY_S, type SyncWindow, type OrderRow } from './conversions';
+import { buildConversionQuery, unknownFieldName, flattenConversions, planQueue, FRESH_QUERY_GAP_MS, SCROLL_TTL_MS, WINDOW_DAYS, DAY_S, type SyncWindow, type OrderRow } from './conversions';
 import { ShopeeConnector, ACCOUNT_PROBLEM_CODES, type GraphDataResult, type GraphFailure, type GraphRequest } from './shopee.server';
 
 type Admin = SupabaseClient<Database>;
 type Execute = (request: GraphRequest) => Promise<GraphDataResult>;
 
-export type PagesResult = { ok: true; nodes: unknown[] } | { ok: false; nodes: unknown[]; expired: true } | { ok: false; nodes: unknown[]; failure: GraphFailure };
+export type PagesResult = ({ ok: true; nodes: unknown[] } | { ok: false; nodes: unknown[]; expired: true } | { ok: false; nodes: unknown[]; failure: GraphFailure }) & { omitted?: string[] };
 
-/** Follows scrollId pages. A scrollId is single-use and expires in 30s; on expiry the window restarts later. */
+const MAX_FIELD_PRUNES = 8;
+/** Fields the Shopee schema said do not exist. Remembered while this server instance lives so later syncs skip them. */
+const rejectedFields = new Set<string>();
+
+/** Follows scrollId pages. A scrollId is single-use and expires in 30s; on expiry the window restarts later.
+ *  If Shopee says a field does not exist ("Cannot query field"), that field is dropped and the same page is asked again. */
 export async function fetchConversionPages(execute: Execute, window: SyncWindow, now: () => number = Date.now, maxPages = 200): Promise<PagesResult> {
   const nodes: unknown[] = [];
+  const omit = new Set(rejectedFields);
+  const dropped: string[] = [];
+  const omitted = () => (dropped.length ? { omitted: [...dropped] } : {});
   let scrollId: string | undefined; let lastAt = 0;
   for (let page = 0; page < maxPages; page++) {
-    if (scrollId !== undefined && now() - lastAt > SCROLL_TTL_MS - 2000) return { ok: false, nodes, expired: true };
-    const result = await execute({ query: buildConversionQuery(window, scrollId) });
-    if (!result.ok) return { ok: false, nodes, failure: result };
+    if (scrollId !== undefined && now() - lastAt > SCROLL_TTL_MS - 2000) return { ok: false, nodes, expired: true, ...omitted() };
+    const result = await execute({ query: buildConversionQuery(window, scrollId, [...omit]) });
+    if (!result.ok) {
+      const unknown = result.errors.map(e => unknownFieldName(e.message)).find((name): name is string => !!name);
+      if (unknown && !omit.has(unknown) && dropped.length < MAX_FIELD_PRUNES) {
+        omit.add(unknown); rejectedFields.add(unknown); dropped.push(unknown);
+        page--; // the same page is asked again without the rejected field
+        continue;
+      }
+      return { ok: false, nodes, failure: result, ...omitted() };
+    }
     lastAt = now();
     const report = result.data['conversionReport'] as { nodes?: unknown; pageInfo?: { hasNextPage?: unknown; scrollId?: unknown } } | null | undefined;
     if (Array.isArray(report?.nodes)) nodes.push(...report.nodes);
     const next = report?.pageInfo?.hasNextPage === true && typeof report.pageInfo.scrollId === 'string' && report.pageInfo.scrollId ? report.pageInfo.scrollId : undefined;
-    if (!next) return { ok: true, nodes };
+    if (!next) return { ok: true, nodes, ...omitted() };
     scrollId = next;
   }
-  return { ok: true, nodes };
+  return { ok: true, nodes, ...omitted() };
 }
 
 export async function upsertOrders(admin: Admin, userId: string, rows: OrderRow[]) {
@@ -87,7 +103,7 @@ export async function runSyncTick(admin: Admin, userId: string, manual: boolean)
       await upsertOrders(admin, userId, rows);
       const message = rows.length ? `${rows.length} ${rows.length === 1 ? 'item atualizado' : 'itens atualizados'}.` : 'Nenhuma venda nova nesse período.';
       await update({ ...plan.patch, queue: queue.slice(1) as unknown as Json, last_success_at: new Date().toISOString(), failures: 0, next_attempt_at: null, last_result: message });
-      if (manual || rows.length) await log(message, { window, saved: rows.length });
+      if (manual || rows.length || pages.omitted) await log(message, { window, saved: rows.length, ...(pages.omitted ? { omitted_fields: pages.omitted } : {}) });
       return { status: 'done', message, saved: rows.length };
     }
     if ('expired' in pages) {
@@ -102,7 +118,7 @@ export async function runSyncTick(admin: Admin, userId: string, manual: boolean)
     if (hardStop) await admin.from('marketplace_connections').update({ status: f.awaitingAccess ? 'awaiting_access' : f.accountProblem ? 'account_problem' : 'invalid_credentials' }).eq('user_id', userId).eq('marketplace', 'shopee');
     await update({ ...plan.patch, queue: queue as unknown as Json, failures, next_attempt_at: new Date(Date.now() + delayMs).toISOString(), last_result: f.message });
     // Error paths are logged so a rejected field (10010) can be identified.
-    await log(f.message, { window, codes, errors: f.errors.map(e => ({ path: e.path, message: e.message, code: e.extensions.code })), account_problem: codes.some(c => ACCOUNT_PROBLEM_CODES.includes(c)) });
+    await log(f.message, { window, codes, errors: f.errors.map(e => ({ path: e.path, message: e.message, code: e.extensions.code })), account_problem: codes.some(c => ACCOUNT_PROBLEM_CODES.includes(c)), ...(pages.omitted ? { omitted_fields: pages.omitted } : {}) });
     return { status: 'error', message: f.message };
   } catch {
     await update({});
