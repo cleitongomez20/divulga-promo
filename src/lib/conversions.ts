@@ -131,8 +131,8 @@ export function planQueue(state: PlanState, nowMs: number, oldestPendingMs: numb
   return { queue, patch };
 }
 
-export type PeriodKey = 'today' | '7d' | '30d' | 'month' | 'last_month' | '90d';
-export const PERIODS: { key: PeriodKey; label: string; phrase: string }[] = [
+export type PeriodKey = 'today' | '7d' | '30d' | 'month' | 'last_month' | '90d' | 'custom';
+export const PERIODS: { key: Exclude<PeriodKey, 'custom'>; label: string; phrase: string }[] = [
   { key: 'today', label: 'Hoje', phrase: 'hoje' },
   { key: '7d', label: '7 dias', phrase: 'nos últimos 7 dias' },
   { key: '30d', label: '30 dias', phrase: 'nos últimos 30 dias' },
@@ -153,8 +153,24 @@ function localMidnight(year: number, month: number, day: number, timeZone: strin
   const first = guess - zoneOffsetMs(guess, timeZone);
   return guess - zoneOffsetMs(first, timeZone);
 }
+export const CUSTOM_PERIOD = { key: 'custom' as const, label: 'Personalizado', phrase: 'no período escolhido' };
+
+/** Checks two YYYY-MM-DD dates typed by the user: puts them in order and refuses spans over a year. */
+export function parseCustomRange(from?: string, to?: string): { from: string; to: string } | null {
+  const valid = (value?: string): value is string => !!value && /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`));
+  if (!valid(from) || !valid(to)) return null;
+  const [first, last] = from <= to ? [from, to] : [to, from];
+  if (Date.parse(`${last}T00:00:00Z`) - Date.parse(`${first}T00:00:00Z`) > 366 * 86_400_000) return null;
+  return { from: first, to: last };
+}
+
 /** Start (inclusive) and end (exclusive) of a period, in ms, using the account time zone. */
-export function periodRange(key: PeriodKey, timeZone: string, nowMs: number): { from: number; to: number } {
+export function periodRange(key: PeriodKey, timeZone: string, nowMs: number, custom?: { from: string; to: string }): { from: number; to: number } {
+  if (key === 'custom' && custom) {
+    const [fy, fm, fd] = custom.from.split('-').map(Number) as [number, number, number];
+    const [ty, tm, td] = custom.to.split('-').map(Number) as [number, number, number];
+    return { from: localMidnight(fy, fm, fd, timeZone), to: localMidnight(ty, tm, td + 1, timeZone) };
+  }
   const parts = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date(nowMs));
   const get = (type: string) => Number(parts.find(p => p.type === type)?.value);
   const y = get('year'), m = get('month'), d = get('day');
@@ -168,6 +184,15 @@ export function periodRange(key: PeriodKey, timeZone: string, nowMs: number): { 
     default: return { from: localMidnight(y, m, 1, timeZone), to };
   }
 }
+
+/** The Shopee only answers for the last 3 months. 85 days stays safely inside that. */
+export const MAX_LOOKBACK_DAYS = 85;
+/** Shrinks a window so it does not reach past what the Shopee serves, or returns null if it is entirely too old. */
+export function clampWindow(window: SyncWindow, nowSeconds: number): SyncWindow | null {
+  const start = Math.max(window.start, nowSeconds - MAX_LOOKBACK_DAYS * DAY_S);
+  return window.end > start ? { ...window, start } : null;
+}
+export const isTooOldError = (message: string) => /last 3 months/i.test(message);
 
 /** Adds the manual "last 7 days" window to the front of the queue, unless the user asked for the history. */
 export function pickWindow(queue: SyncWindow[], manual: boolean, mode: 'recent' | 'history', nowSeconds: number): SyncWindow[] {
