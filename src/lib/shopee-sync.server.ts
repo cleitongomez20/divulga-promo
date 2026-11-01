@@ -1,7 +1,7 @@
 // Server-only: conversion sync for Shopee. Never import from components.
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Database, Json } from '@/integrations/supabase/types';
-import { buildConversionQuery, unknownFieldName, pickWindow, flattenConversions, planQueue, FRESH_QUERY_GAP_MS, SCROLL_TTL_MS, DAY_S, type SyncWindow, type OrderRow } from './conversions';
+import { buildConversionQuery, unknownFieldName, pickWindow, clampWindow, isTooOldError, flattenConversions, planQueue, FRESH_QUERY_GAP_MS, SCROLL_TTL_MS, DAY_S, type SyncWindow, type OrderRow } from './conversions';
 import { ShopeeConnector, ACCOUNT_PROBLEM_CODES, type GraphDataResult, type GraphFailure, type GraphRequest } from './shopee.server';
 
 type Admin = SupabaseClient<Database>;
@@ -93,9 +93,12 @@ export async function runSyncTick(admin: Admin, userId: string, manual: boolean,
     if (!manual && state.next_attempt_at && Date.parse(state.next_attempt_at) > Date.now()) { await update({}); return { status: 'paused', message: state.last_result ?? 'Sincronização pausada.' }; }
     const { data: oldest } = await admin.from('orders').select('ordered_at').eq('user_id', userId).eq('status', 'pending').order('ordered_at', { ascending: true }).limit(1).maybeSingle();
     const plan = planQueue({ ...state, queue: Array.isArray(state.queue) ? state.queue as unknown as SyncWindow[] : [] }, Date.now(), oldest?.ordered_at ? Date.parse(oldest.ordered_at) : null);
-    const queue = pickWindow(plan.queue, manual, mode, Math.floor(Date.now() / 1000));
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const queue = pickWindow(plan.queue, manual, mode, nowSeconds);
+    // The Shopee only serves the last 3 months: windows older than that are shortened or dropped without calling it.
+    while (queue.length) { const fitted = clampWindow(queue[0] as SyncWindow, nowSeconds); if (fitted) { queue[0] = fitted; break; } queue.shift(); }
     const window = queue[0];
-    if (!window) { await update({ ...plan.patch }); return { status: 'done', message: mode === 'history' ? 'Seu histórico já está carregado.' : 'Suas vendas já estão em dia.', saved: 0, remaining: 0 }; }
+    if (!window) { await update({ ...plan.patch, queue: [] as unknown as Json }); return { status: 'done', message: mode === 'history' ? 'Seu histórico já está carregado.' : 'Suas vendas já estão em dia.', saved: 0, remaining: 0 }; }
     const pages = await fetchConversionPages(req => connector.execute(req), window);
     const rows = flattenConversions(pages.nodes, state.sub_id_separator);
     if (pages.ok) {
@@ -111,6 +114,12 @@ export async function runSyncTick(admin: Admin, userId: string, manual: boolean,
     }
     const f = pages.failure;
     const codes = f.errors.map(e => e.extensions.code);
+    if (codes.includes(11001) && f.errors.some(e => isTooOldError(e.message))) {
+      const message = 'Esse trecho é mais antigo do que os 3 meses que a Shopee informa e foi ignorado.';
+      await update({ ...plan.patch, queue: queue.slice(1) as unknown as Json, last_result: message });
+      await log(message, { window, codes });
+      return { status: 'done', message, saved: 0, remaining: queue.length - 1 };
+    }
     const failures = state.failures + 1;
     const hardStop = f.accountProblem || f.awaitingAccess || f.invalidCredentials;
     const delayMs = hardStop ? 30 * DAY_S * 1000 : Math.min(2 ** failures * 5 * 60_000, 6 * 3600_000);
