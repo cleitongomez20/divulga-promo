@@ -1,7 +1,7 @@
 // Server-only: conversion sync for Shopee. Never import from components.
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Database, Json } from '@/integrations/supabase/types';
-import { buildConversionQuery, unknownFieldName, flattenConversions, planQueue, FRESH_QUERY_GAP_MS, SCROLL_TTL_MS, WINDOW_DAYS, DAY_S, type SyncWindow, type OrderRow } from './conversions';
+import { buildConversionQuery, unknownFieldName, pickWindow, flattenConversions, planQueue, FRESH_QUERY_GAP_MS, SCROLL_TTL_MS, DAY_S, type SyncWindow, type OrderRow } from './conversions';
 import { ShopeeConnector, ACCOUNT_PROBLEM_CODES, type GraphDataResult, type GraphFailure, type GraphRequest } from './shopee.server';
 
 type Admin = SupabaseClient<Database>;
@@ -75,9 +75,9 @@ async function openConnector(admin: Admin, userId: string) {
   });
 }
 
-export type TickResult = { status: 'done' | 'wait' | 'busy' | 'simulated' | 'paused' | 'error' | 'restart'; message: string; waitSeconds?: number; saved?: number };
+export type TickResult = { status: 'done' | 'wait' | 'busy' | 'simulated' | 'paused' | 'error' | 'restart'; message: string; waitSeconds?: number; saved?: number; remaining?: number };
 
-export async function runSyncTick(admin: Admin, userId: string, manual: boolean): Promise<TickResult> {
+export async function runSyncTick(admin: Admin, userId: string, manual: boolean, mode: 'recent' | 'history' = 'recent'): Promise<TickResult> {
   const { data: gap, error: gapError } = await admin.rpc('reserve_connector_slot', { p_scope: `shopee-conv:${userId}`, p_interval_ms: FRESH_QUERY_GAP_MS });
   if (gapError) return { status: 'error', message: 'Não foi possível aplicar a pausa de segurança.' };
   if (gap !== 0) return { status: 'wait', message: 'Aguarde alguns segundos antes de atualizar de novo.', waitSeconds: Math.ceil((gap ?? 30000) / 1000) };
@@ -93,10 +93,9 @@ export async function runSyncTick(admin: Admin, userId: string, manual: boolean)
     if (!manual && state.next_attempt_at && Date.parse(state.next_attempt_at) > Date.now()) { await update({}); return { status: 'paused', message: state.last_result ?? 'Sincronização pausada.' }; }
     const { data: oldest } = await admin.from('orders').select('ordered_at').eq('user_id', userId).eq('status', 'pending').order('ordered_at', { ascending: true }).limit(1).maybeSingle();
     const plan = planQueue({ ...state, queue: Array.isArray(state.queue) ? state.queue as unknown as SyncWindow[] : [] }, Date.now(), oldest?.ordered_at ? Date.parse(oldest.ordered_at) : null);
-    const queue = plan.queue;
-    if (manual) { const now = Math.floor(Date.now() / 1000); queue.unshift({ field: 'purchase', start: now - WINDOW_DAYS * DAY_S, end: now }); }
+    const queue = pickWindow(plan.queue, manual, mode, Math.floor(Date.now() / 1000));
     const window = queue[0];
-    if (!window) { await update({ ...plan.patch }); return { status: 'done', message: 'Suas vendas já estão em dia.', saved: 0 }; }
+    if (!window) { await update({ ...plan.patch }); return { status: 'done', message: mode === 'history' ? 'Seu histórico já está carregado.' : 'Suas vendas já estão em dia.', saved: 0, remaining: 0 }; }
     const pages = await fetchConversionPages(req => connector.execute(req), window);
     const rows = flattenConversions(pages.nodes, state.sub_id_separator);
     if (pages.ok) {
@@ -104,7 +103,7 @@ export async function runSyncTick(admin: Admin, userId: string, manual: boolean)
       const message = rows.length ? `${rows.length} ${rows.length === 1 ? 'item atualizado' : 'itens atualizados'}.` : 'Nenhuma venda nova nesse período.';
       await update({ ...plan.patch, queue: queue.slice(1) as unknown as Json, last_success_at: new Date().toISOString(), failures: 0, next_attempt_at: null, last_result: message });
       if (manual || rows.length || pages.omitted) await log(message, { window, saved: rows.length, ...(pages.omitted ? { omitted_fields: pages.omitted } : {}) });
-      return { status: 'done', message, saved: rows.length };
+      return { status: 'done', message, saved: rows.length, remaining: queue.length - 1 };
     }
     if ('expired' in pages) {
       await update({ ...plan.patch, queue: queue as unknown as Json, last_result: 'A consulta demorou demais e será refeita.' });

@@ -1,3 +1,5 @@
 import { queryOptions } from '@tanstack/react-query';
 import { getSalesOverview } from './sales.functions';
-export const salesQuery = queryOptions({ queryKey: ['sales'], queryFn: () => getSalesOverview(), staleTime: 0 });
+import type { PeriodKey } from './conversions';
+
+export const salesQuery = (period: PeriodKey = 'month') => queryOptions({ queryKey: ['sales', period], queryFn: () => getSalesOverview({ data: { period } }), staleTime: 0 });

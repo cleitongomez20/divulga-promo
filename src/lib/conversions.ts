@@ -131,6 +131,51 @@ export function planQueue(state: PlanState, nowMs: number, oldestPendingMs: numb
   return { queue, patch };
 }
 
+export type PeriodKey = 'today' | '7d' | '30d' | 'month' | 'last_month' | '90d';
+export const PERIODS: { key: PeriodKey; label: string; phrase: string }[] = [
+  { key: 'today', label: 'Hoje', phrase: 'hoje' },
+  { key: '7d', label: '7 dias', phrase: 'nos últimos 7 dias' },
+  { key: '30d', label: '30 dias', phrase: 'nos últimos 30 dias' },
+  { key: 'month', label: 'Este mês', phrase: 'neste mês' },
+  { key: 'last_month', label: 'Mês passado', phrase: 'no mês passado' },
+  { key: '90d', label: '90 dias', phrase: 'nos últimos 90 dias' },
+];
+
+/** Local wall clock minus UTC, in ms, for a time zone at a given instant. */
+function zoneOffsetMs(ms: number, timeZone: string) {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }).formatToParts(new Date(ms));
+  const get = (type: string) => Number(parts.find(p => p.type === type)?.value);
+  return Date.UTC(get('year'), get('month') - 1, get('day'), get('hour'), get('minute'), get('second')) - Math.floor(ms / 1000) * 1000;
+}
+/** The instant of local midnight for a calendar date (day and month may overflow, e.g. day 0 or month 0). */
+function localMidnight(year: number, month: number, day: number, timeZone: string) {
+  const guess = Date.UTC(year, month - 1, day);
+  const first = guess - zoneOffsetMs(guess, timeZone);
+  return guess - zoneOffsetMs(first, timeZone);
+}
+/** Start (inclusive) and end (exclusive) of a period, in ms, using the account time zone. */
+export function periodRange(key: PeriodKey, timeZone: string, nowMs: number): { from: number; to: number } {
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date(nowMs));
+  const get = (type: string) => Number(parts.find(p => p.type === type)?.value);
+  const y = get('year'), m = get('month'), d = get('day');
+  const to = nowMs + 1;
+  switch (key) {
+    case 'today': return { from: localMidnight(y, m, d, timeZone), to };
+    case '7d': return { from: localMidnight(y, m, d - 6, timeZone), to };
+    case '30d': return { from: localMidnight(y, m, d - 29, timeZone), to };
+    case '90d': return { from: localMidnight(y, m, d - 89, timeZone), to };
+    case 'last_month': return { from: localMidnight(y, m - 1, 1, timeZone), to: localMidnight(y, m, 1, timeZone) };
+    default: return { from: localMidnight(y, m, 1, timeZone), to };
+  }
+}
+
+/** Adds the manual "last 7 days" window to the front of the queue, unless the user asked for the history. */
+export function pickWindow(queue: SyncWindow[], manual: boolean, mode: 'recent' | 'history', nowSeconds: number): SyncWindow[] {
+  const result = [...queue];
+  if (manual && mode === 'recent') result.unshift({ field: 'purchase', start: nowSeconds - WINDOW_DAYS * DAY_S, end: nowSeconds });
+  return result;
+}
+
 function monthKey(iso: string | null, timeZone: string) {
   if (!iso) return '';
   const parts = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit' }).formatToParts(new Date(iso));
@@ -140,15 +185,22 @@ export type SummaryRow = Pick<OrderRow, 'conversion_id' | 'external_order_id' | 
 export const isFraud = (r: { fraud_status: string | null }) => (r.fraud_status ?? '').toUpperCase() === 'FRAUD';
 
 /** Earnings: completed this month (net, else total); pending apart; cancelled and fraud excluded. */
-export function summarizeSales(rows: SummaryRow[], timeZone: string, nowMs: number) {
+export function summarizeSales(rows: SummaryRow[], timeZone: string, nowMs: number, range?: { from: number; to: number }) {
   const month = monthKey(new Date(nowMs).toISOString(), timeZone);
+  // Without a range the current month is used (the original behaviour).
+  const inPeriod = (iso: string | null) => {
+    if (!iso) return false;
+    if (!range) return monthKey(iso, timeZone) === month;
+    const t = Date.parse(iso);
+    return t >= range.from && t < range.to;
+  };
   let earnedCents = 0, pendingCents = 0;
   const orders = new Set<string>();
   const groups = new Map<string, SummaryRow[]>();
   for (const r of rows) { const g = groups.get(r.conversion_id) ?? []; g.push(r); groups.set(r.conversion_id, g); }
   for (const items of groups.values()) {
     const valid = items.filter(i => !isFraud(i));
-    for (const i of valid) if (monthKey(i.ordered_at, timeZone) === month) orders.add(i.external_order_id);
+    for (const i of valid) if (inPeriod(i.ordered_at)) orders.add(i.external_order_id);
     const buckets = new Set(valid.map(i => i.status));
     const uniform = valid.length === items.length && buckets.size === 1;
     for (const bucket of ['completed', 'pending'] as const) {
@@ -156,7 +208,7 @@ export function summarizeSales(rows: SummaryRow[], timeZone: string, nowMs: numb
       const itemSum = inBucket.reduce((s, i) => s + i.commission_cents, 0);
       const amount = uniform && buckets.has(bucket) && inBucket[0]!.conversion_commission_cents ? inBucket[0]!.conversion_commission_cents : itemSum;
       const when = bucket === 'completed' ? (inBucket.map(i => i.completed_at).filter(Boolean).sort().pop() ?? inBucket[0]!.ordered_at) : inBucket[0]!.ordered_at;
-      if (monthKey(when ?? null, timeZone) !== month) continue;
+      if (!inPeriod(when ?? null)) continue;
       if (bucket === 'completed') earnedCents += amount; else pendingCents += amount;
     }
   }
