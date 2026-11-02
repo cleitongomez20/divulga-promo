@@ -3,7 +3,7 @@ import { parse } from 'graphql';
 import { ShopeeConnector } from '@/lib/shopee.server';
 import {
   PRODUCT_FIELDS, buildProductQuery, cleanKeyword, unknownProductField, normalizeProducts, toProductRow, encodeSubIds, encodeSubId,
-  isShopeeUrl, buildShortLinkMutation, safeUrl, priceText, formatPercent, simulatedProducts,
+  isShopeeUrl, buildShortLinkMutation, safeUrl, priceText, formatPercent, simulatedProducts, sortProducts,
 } from '@/lib/products';
 
 const base = { sortType: 2, page: 1, limit: 20 };
@@ -128,5 +128,25 @@ describe('through the Shopee connector', () => {
     expect(link.ok).toBe(true);
     if (link.ok) expect((link.data['generateShortLink'] as { shortLink: string }).shortLink).toBe('https://s.shopee.com.br/abc123');
     expect(JSON.parse(bodies[1] as string).query).toContain('generateShortLink');
+  });
+});
+
+describe('ordering on the screen', () => {
+  const make = (id: string, sales: number | null, rate: number | null, price: number | null) =>
+    normalizeProducts([node({ itemId: id, sales, commissionRate: rate === null ? undefined : String(rate), priceMin: price === null ? undefined : String(price), priceMax: undefined })])[0]!;
+  const list = [make('1', 10, 0.1, 50), make('2', 500, 0.05, 20), make('3', null, null, null), make('4', 90, 0.2, 80)];
+  const ids = (items: { itemId: string }[]) => items.map(item => item.itemId);
+  it('puts best sellers first and products without the value last', () => {
+    expect(ids(sortProducts(list, 2))).toEqual(['2', '4', '1', '3']);
+  });
+  it('orders by commission, and by price in both directions', () => {
+    expect(ids(sortProducts(list, 5))).toEqual(['4', '1', '2', '3']);
+    expect(ids(sortProducts(list, 4))).toEqual(['2', '1', '4', '3']);
+    expect(ids(sortProducts(list, 3))).toEqual(['4', '1', '2', '3']);
+  });
+  it('keeps the Shopee order for relevance and never changes the original list', () => {
+    expect(ids(sortProducts(list, 1))).toEqual(['1', '2', '3', '4']);
+    sortProducts(list, 2);
+    expect(ids(list)).toEqual(['1', '2', '3', '4']);
   });
 });
