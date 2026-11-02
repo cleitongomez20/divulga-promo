@@ -51,7 +51,7 @@ export async function upsertOrders(admin: Admin, userId: string, rows: OrderRow[
   }
 }
 
-async function openConnector(admin: Admin, userId: string) {
+export async function openConnector(admin: Admin, userId: string) {
   const { data: connection } = await admin.from('marketplace_connections').select('credential_id').eq('user_id', userId).eq('marketplace', 'shopee').maybeSingle();
   if (!connection?.credential_id) return null;
   const key = process.env['CONNECTOR_ENCRYPTION_KEY'];
