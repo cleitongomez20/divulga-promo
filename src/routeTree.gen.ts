@@ -19,6 +19,7 @@ import { Route as AuthenticatedConfiguracoesRouteImport } from './routes/_authen
 import { Route as AuthenticatedHistoricoRouteImport } from './routes/_authenticated/historico'
 import { Route as AuthenticatedPainelRouteImport } from './routes/_authenticated/painel'
 import { Route as AuthenticatedProdutosRouteImport } from './routes/_authenticated/produtos'
+import { Route as ApiPublicInstagramCallbackRouteImport } from './routes/api/public/instagram-callback'
 import { Route as ApiPublicShopeeSyncRouteImport } from './routes/api/public/shopee-sync'
 
 const IndexRoute = IndexRouteImport.update({
@@ -71,6 +72,12 @@ const AuthenticatedProdutosRoute = AuthenticatedProdutosRouteImport.update({
   path: '/produtos',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const ApiPublicInstagramCallbackRoute =
+  ApiPublicInstagramCallbackRouteImport.update({
+    id: '/api/public/instagram-callback',
+    path: '/api/public/instagram-callback',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const ApiPublicShopeeSyncRoute = ApiPublicShopeeSyncRouteImport.update({
   id: '/api/public/shopee-sync',
   path: '/api/public/shopee-sync',
@@ -87,6 +94,7 @@ export interface FileRoutesByFullPath {
   '/historico': typeof AuthenticatedHistoricoRoute
   '/painel': typeof AuthenticatedPainelRoute
   '/produtos': typeof AuthenticatedProdutosRoute
+  '/api/public/instagram-callback': typeof ApiPublicInstagramCallbackRoute
   '/api/public/shopee-sync': typeof ApiPublicShopeeSyncRoute
 }
 export interface FileRoutesByTo {
@@ -99,6 +107,7 @@ export interface FileRoutesByTo {
   '/historico': typeof AuthenticatedHistoricoRoute
   '/painel': typeof AuthenticatedPainelRoute
   '/produtos': typeof AuthenticatedProdutosRoute
+  '/api/public/instagram-callback': typeof ApiPublicInstagramCallbackRoute
   '/api/public/shopee-sync': typeof ApiPublicShopeeSyncRoute
 }
 export interface FileRoutesById {
@@ -113,6 +122,7 @@ export interface FileRoutesById {
   '/_authenticated/historico': typeof AuthenticatedHistoricoRoute
   '/_authenticated/painel': typeof AuthenticatedPainelRoute
   '/_authenticated/produtos': typeof AuthenticatedProdutosRoute
+  '/api/public/instagram-callback': typeof ApiPublicInstagramCallbackRoute
   '/api/public/shopee-sync': typeof ApiPublicShopeeSyncRoute
 }
 export interface FileRouteTypes {
@@ -127,6 +137,7 @@ export interface FileRouteTypes {
     | '/historico'
     | '/painel'
     | '/produtos'
+    | '/api/public/instagram-callback'
     | '/api/public/shopee-sync'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -139,6 +150,7 @@ export interface FileRouteTypes {
     | '/historico'
     | '/painel'
     | '/produtos'
+    | '/api/public/instagram-callback'
     | '/api/public/shopee-sync'
   id:
     | '__root__'
@@ -152,6 +164,7 @@ export interface FileRouteTypes {
     | '/_authenticated/historico'
     | '/_authenticated/painel'
     | '/_authenticated/produtos'
+    | '/api/public/instagram-callback'
     | '/api/public/shopee-sync'
   fileRoutesById: FileRoutesById
 }
@@ -161,6 +174,7 @@ export interface RootRouteChildren {
   AuthRoute: typeof AuthRoute
   RecuperarSenhaRoute: typeof RecuperarSenhaRoute
   ResetPasswordRoute: typeof ResetPasswordRoute
+  ApiPublicInstagramCallbackRoute: typeof ApiPublicInstagramCallbackRoute
   ApiPublicShopeeSyncRoute: typeof ApiPublicShopeeSyncRoute
 }
 
@@ -236,6 +250,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedProdutosRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/api/public/instagram-callback': {
+      id: '/api/public/instagram-callback'
+      path: '/api/public/instagram-callback'
+      fullPath: '/api/public/instagram-callback'
+      preLoaderRoute: typeof ApiPublicInstagramCallbackRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/public/shopee-sync': {
       id: '/api/public/shopee-sync'
       path: '/api/public/shopee-sync'
@@ -271,6 +292,7 @@ const rootRouteChildren: RootRouteChildren = {
   AuthRoute: AuthRoute,
   RecuperarSenhaRoute: RecuperarSenhaRoute,
   ResetPasswordRoute: ResetPasswordRoute,
+  ApiPublicInstagramCallbackRoute: ApiPublicInstagramCallbackRoute,
   ApiPublicShopeeSyncRoute: ApiPublicShopeeSyncRoute,
 }
 export const routeTree = rootRouteImport
