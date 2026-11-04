@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   InstagramError, signState, verifyState, buildAuthorizeUrl, exchangeCode, exchangeForLongLived, fetchGrantedPermissions, discoverAccounts, verifyAccount,
-  completeInstagramLogin, saveAppCredentials, loadAppCredentials, removeAppCredentials, getPublishingToken, checkAccount, loadAccount, disconnectAccount, saveConnectedAccount,
+  completeInstagramLogin, discoverSharedInstagramIds, saveAppCredentials, loadAppCredentials, removeAppCredentials, getPublishingToken, checkAccount, loadAccount, disconnectAccount, saveConnectedAccount,
 } from '@/lib/instagram.server';
 import { instagramAppSchema, instagramErrorMessage, maskId, REQUIRED_PERMISSIONS } from '@/lib/instagram';
 import { sealJson, openJson } from '@/lib/secret-box.server';
@@ -51,11 +51,11 @@ describe('app data and messages', () => {
     expect(instagramAppSchema.safeParse({ appId: APP.appId, appSecret: APP.appSecret }).success).toBe(false);
   });
   it('has a plain message for each failure and masks ids', () => {
-    expect(instagramErrorMessage('sem_instagram')).toContain('Página');
+    expect(instagramErrorMessage('sem_instagram')).toContain('portfólio');
     expect(instagramErrorMessage('permissao')).toContain('instagram_content_publish');
     expect(instagramErrorMessage('qualquer-coisa')).toContain('Não foi possível');
     expect(maskId('123456789012345')).toBe('123••••••••••45');
-    expect([...REQUIRED_PERMISSIONS]).toEqual(['instagram_basic', 'instagram_content_publish', 'pages_show_list']);
+    expect([...REQUIRED_PERMISSIONS]).toEqual(['instagram_basic', 'instagram_content_publish']);
   });
 });
 
@@ -148,9 +148,11 @@ describe('calls to the Meta Graph', () => {
 });
 
 describe('connecting the account', () => {
-  const meta = (options: { permissions?: string[]; pages?: unknown; failAt?: 'code' | 'long' | 'perms' | 'pages' } = {}) => asFetch(url => {
+  const meta = (options: { permissions?: string[]; pages?: unknown; failAt?: 'code' | 'long' | 'perms' | 'pages'; shared?: unknown; debugFails?: boolean } = {}) => asFetch(url => {
     const perms = options.permissions ?? ['instagram_basic', 'instagram_content_publish', 'pages_show_list', 'pages_read_engagement'];
     const pages = options.pages ?? [{ id: '222', name: 'Minha Loja', access_token: 'PAGE-TOKEN', instagram_business_account: { id: '17841405793187218', username: 'minha.loja' } }];
+    if (url.includes('/debug_token')) return options.debugFails ? json({ error: { code: 100, message: 'x' } }, 400) : json({ data: { granular_scopes: options.shared ?? [] } });
+    if (url.includes('/17841405793187218?')) return json({ id: '17841405793187218', username: 'loja.unificada' });
     if (url.includes('grant_type=fb_exchange_token')) return options.failAt === 'long' ? json({ error: { code: 190, message: 'x' } }, 400) : json({ access_token: 'LONG-USER-TOKEN', expires_in: 5184000 });
     if (url.includes('/oauth/access_token')) return options.failAt === 'code' ? json({ error: { code: 100, message: 'bad code' } }, 400) : json({ access_token: 'SHORT-USER-TOKEN' });
     if (url.includes('/me/permissions')) return options.failAt === 'perms' ? json({}, 500) : json({ data: perms.map(permission => ({ permission, status: 'granted' })) });
@@ -191,11 +193,29 @@ describe('connecting the account', () => {
     await saveAppCredentials(db.admin, USER, KEY, APP);
     expect(await login(db, meta({ failAt: 'code' }))).toEqual({ ok: false, code: 'troca' });
     expect(lastLog(db).details).toMatchObject({ falha: { step: 'trocar_codigo', status: 400, meta: { code: 100 } } });
-    expect(await login(db, meta({ failAt: 'long' }))).toEqual({ ok: false, code: 'troca' });
-    expect(lastLog(db).details).toMatchObject({ codigo_trocado: true, falha: { step: 'token_longo' } });
     expect(await login(db, meta({ failAt: 'pages' }))).toEqual({ ok: false, code: 'perfil' });
     expect(lastLog(db).details).toMatchObject({ falha: { step: 'paginas', meta: { code: 200 } } });
     expect(await loadAccount(db.admin, USER)).toBeNull();
+  });
+  it('Unified Login: connects from the shared accounts with no Page and keeps the token it received', async () => {
+    const db = fakeAdmin(); await saveAppCredentials(db.admin, USER, KEY, APP);
+    const shared = [{ scope: 'instagram_basic', target_ids: [17841405793187218] }, { scope: 'instagram_content_publish', target_ids: ['17841405793187218'] }];
+    expect(await login(db, meta({ shared, pages: [], failAt: 'long' }))).toEqual({ ok: true });
+    expect(await loadAccount(db.admin, USER)).toEqual({ username: 'loja.unificada', igUserId: '17841405793187218', pageId: null, status: 'connected' });
+    expect(await getPublishingToken(db.admin, USER, KEY)).toEqual({ token: 'SHORT-USER-TOKEN', igUserId: '17841405793187218', pageId: null });
+    expect(lastLog(db)).toMatchObject({ result: 'Conta conectada', details: { modo: 'unificado', contas_compartilhadas: 1, token_longo: false } });
+  });
+  it('Unified Login: falls back to Pages when the token lists no shared account, and fails clearly when nothing is found', async () => {
+    const db = fakeAdmin(); await saveAppCredentials(db.admin, USER, KEY, APP);
+    expect(await login(db, meta({ debugFails: true }))).toEqual({ ok: true });
+    expect(lastLog(db).details).toMatchObject({ modo: 'paginas', contas_compartilhadas: 0 });
+    expect(lastLog(db).details).toHaveProperty('ler_token_erro');
+    const empty = fakeAdmin(); await saveAppCredentials(empty.admin, USER, KEY, APP);
+    expect(await login(empty, meta({ pages: [] }))).toEqual({ ok: false, code: 'sem_instagram' });
+  });
+  it('reads shared Instagram ids from granular scopes without losing digits', async () => {
+    const body = '{"data":{"granular_scopes":[{"scope":"instagram_basic","target_ids":[17841405793187218, "17841400000000001"]},{"scope":"business_management","target_ids":["999"]}]}}';
+    expect(await discoverSharedInstagramIds(asFetch(() => json(body)), { appId: '1', appSecret: 's', token: 'T' })).toEqual(['17841405793187218', '17841400000000001']);
   });
   it('still connects when listing permissions fails, because the Page search proves the access', async () => {
     const db = fakeAdmin(); await saveAppCredentials(db.admin, USER, KEY, APP);

@@ -59,7 +59,9 @@ const num = (value: unknown) => (typeof value === 'number' && Number.isFinite(va
 /** Ids can have 17 digits, more than JavaScript numbers hold exactly, so they are turned into text before reading. */
 async function readJson(res: Response): Promise<Record<string, unknown> | null> {
   try {
-    const raw = (await res.text()).replace(/("(?:user_id|id)"\s*:\s*)(\d{15,})/g, '$1"$2"');
+    const raw = (await res.text())
+      .replace(/("(?:user_id|id)"\s*:\s*)(\d{15,})/g, '$1"$2"')
+      .replace(/("target_ids"\s*:\s*\[)([^\]]*)\]/g, (_m, head: string, inner: string) => `${head}${inner.replace(/(^|,)(\s*)(\d{15,})(?=\s*(?:,|$))/g, '$1$2"$3"')}]`);
     const value: unknown = JSON.parse(raw);
     return value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
   } catch { return null; }
@@ -120,6 +122,28 @@ export async function discoverAccounts(fetcher: Fetcher, token: string): Promise
     accounts.push({ pageId, pageName: text(page['name']), pageToken, igUserId: igId, igUsername: text((instagram as Record<string, unknown>)['username']) });
   }
   return { accounts, pagesSeen: pages.length };
+}
+
+/**
+ * Unified Login: no Facebook Page. The token belongs to the client's business portfolio and the Instagram accounts the
+ * client shared are listed in the token's "granular scopes" (asked to Meta with the app's own id|secret).
+ */
+export async function discoverSharedInstagramIds(fetcher: Fetcher, p: { appId: string; appSecret: string; token: string }): Promise<string[]> {
+  const json = await graphGet(fetcher, graphUrl('/debug_token', { input_token: p.token, access_token: `${p.appId}|${p.appSecret}` }), 'perfil', 'ler_token');
+  const data = json['data'] && typeof json['data'] === 'object' ? (json['data'] as Record<string, unknown>) : {};
+  const scopes = Array.isArray(data['granular_scopes']) ? (data['granular_scopes'] as unknown[]) : [];
+  const ids: string[] = [];
+  for (const raw of scopes) {
+    if (!raw || typeof raw !== 'object') continue;
+    const entry = raw as Record<string, unknown>;
+    const scope = String(entry['scope'] ?? '');
+    if (!scope.startsWith('instagram_')) continue;
+    for (const id of Array.isArray(entry['target_ids']) ? (entry['target_ids'] as unknown[]) : []) {
+      const value = typeof id === 'string' ? id : typeof id === 'number' ? String(id) : null;
+      if (value && /^\d+$/.test(value) && !ids.includes(value)) ids.push(value);
+    }
+  }
+  return ids;
 }
 /** Asks the Instagram account itself, which proves the saved access really works. */
 export async function verifyAccount(fetcher: Fetcher, token: string, igUserId: string) {
@@ -234,22 +258,37 @@ export async function completeInstagramLogin(p: { admin: Admin; userId: string; 
     if (!app) return { ok: false, code: 'app' };
     const short = await exchangeCode(fetcher, { appId: app.appId, appSecret: app.appSecret, redirectUri: p.redirectUri, code: p.code });
     diagnostics['codigo_trocado'] = true;
+    // Unified Login hands over a Business Integration System User token, which does not expire and needs no long-lived exchange.
+    // Older configurations (Facebook user token) still get the exchange; if it is refused, the token received is kept.
     let token = short.token;
-    const long = await exchangeForLongLived(fetcher, { appId: app.appId, appSecret: app.appSecret, shortToken: short.token });
-    token = long.token; diagnostics['token_longo'] = true;
-    // A failure to list permissions is not fatal: the page search below shows whether the access works.
+    await exchangeForLongLived(fetcher, { appId: app.appId, appSecret: app.appSecret, shortToken: short.token })
+      .then(long => { token = long.token; diagnostics['token_longo'] = true; })
+      .catch((error: unknown) => { diagnostics['token_longo'] = false; diagnostics['token_longo_erro'] = error instanceof InstagramError ? error.detail : true; });
+    // A failure to list permissions is not fatal: finding the account below shows whether the access works.
     const granted = await fetchGrantedPermissions(fetcher, token).catch((error: unknown) => { diagnostics['permissoes_erro'] = error instanceof InstagramError ? error.detail : true; return null; });
     if (granted) {
       diagnostics['permissoes'] = granted;
       const missing = REQUIRED_PERMISSIONS.filter(permission => !granted.includes(permission));
       if (missing.length) { diagnostics['permissoes_faltando'] = missing; await record('Permissões insuficientes'); return { ok: false, code: 'permissao' }; }
     }
-    const { accounts, pagesSeen } = await discoverAccounts(fetcher, token);
-    diagnostics['paginas'] = pagesSeen; diagnostics['contas_instagram'] = accounts.length;
-    const chosen = accounts[0];
-    if (!chosen) { await record('Nenhuma conta do Instagram encontrada'); return { ok: false, code: 'sem_instagram' }; }
-    await saveConnectedAccount(p.admin, p.userId, p.masterKey, { igUserId: chosen.igUserId, username: chosen.igUsername, pageId: chosen.pageId, token: chosen.pageToken, issuedAt: now, expiresAt: null });
-    diagnostics['usuario'] = chosen.igUsername;
+    // 1) Unified Login: accounts shared with the token (no Page involved).
+    const sharedIds = await discoverSharedInstagramIds(fetcher, { appId: app.appId, appSecret: app.appSecret, token })
+      .catch((error: unknown) => { diagnostics['ler_token_erro'] = error instanceof InstagramError ? error.detail : true; return [] as string[]; });
+    diagnostics['contas_compartilhadas'] = sharedIds.length;
+    if (sharedIds.length) {
+      const igUserId = sharedIds[0] as string;
+      const { username } = await verifyAccount(fetcher, token, igUserId);
+      await saveConnectedAccount(p.admin, p.userId, p.masterKey, { igUserId, username, pageId: null, token, issuedAt: now, expiresAt: null });
+      diagnostics['modo'] = 'unificado'; diagnostics['usuario'] = username;
+    } else {
+      // 2) Older configurations: Pages that have a professional Instagram account linked.
+      const { accounts, pagesSeen } = await discoverAccounts(fetcher, token);
+      diagnostics['paginas'] = pagesSeen; diagnostics['contas_instagram'] = accounts.length;
+      const chosen = accounts[0];
+      if (!chosen) { await record('Nenhuma conta do Instagram encontrada'); return { ok: false, code: 'sem_instagram' }; }
+      await saveConnectedAccount(p.admin, p.userId, p.masterKey, { igUserId: chosen.igUserId, username: chosen.igUsername, pageId: chosen.pageId, token: chosen.pageToken, issuedAt: now, expiresAt: null });
+      diagnostics['modo'] = 'paginas'; diagnostics['usuario'] = chosen.igUsername;
+    }
     await record('Conta conectada');
     return { ok: true };
   } catch (error) {

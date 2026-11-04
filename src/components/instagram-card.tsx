@@ -85,10 +85,10 @@ export function InstagramCard() {
         <summary className="cursor-pointer font-medium">Como preparar o app na Meta (passo a passo)</summary>
         <ol className="mt-3 list-decimal space-y-2 pl-5 text-muted-foreground">
           <li>Em <a className="underline" href="https://developers.facebook.com/apps/" target="_blank" rel="noopener noreferrer">developers.facebook.com</a>, abra o seu app e vá em <strong>Configurações do app &gt; Básico</strong>. Copie o <strong>ID do app</strong> e a <strong>Chave secreta do app</strong> (clique em Mostrar).</li>
-          <li>Vá em <strong>Casos de uso</strong>, abra <strong>Gerenciar mensagens e conteúdo no Instagram &gt; Personalizar</strong> e entre em <strong>Configuração da API com login do Facebook</strong>.</li>
-          <li>Crie uma <strong>configuração de login</strong>. Escolha o token de acesso <strong>do usuário</strong> (não o do usuário do sistema) e as permissões <strong>instagram_basic</strong>, <strong>instagram_content_publish</strong>, <strong>pages_show_list</strong> e <strong>pages_read_engagement</strong>. Copie o <strong>ID da configuração</strong>.</li>
+          <li>Vá em <strong>Casos de uso</strong>, abra <strong>Gerenciar mensagens e conteúdo no Instagram &gt; Personalizar</strong> e entre em <strong>Configuração da API com login unificado</strong>.</li>
+          <li>Crie uma <strong>configuração de login</strong> com as permissões <strong>instagram_basic</strong> e <strong>instagram_content_publish</strong>. Copie o <strong>ID da configuração</strong>.</li>
           <li>Cadastre o endereço abaixo como <strong>URI de redirecionamento OAuth válido</strong>.</li>
-          <li>O Instagram precisa ser <strong>profissional</strong> e estar <strong>vinculado a uma Página do Facebook</strong> que você administra. Na tela de autorização, selecione essa Página e o Instagram.</li>
+          <li>O Instagram precisa ser <strong>profissional</strong>. <strong>Não é preciso Página do Facebook.</strong> Na tela da Meta, entre com Instagram ou Facebook, selecione o <strong>portfólio empresarial</strong> e a <strong>conta do Instagram</strong> a compartilhar e aprove as permissões.</li>
         </ol>
         <p className="mt-3 font-medium">Endereço de retorno (URI de redirecionamento)</p>
         <div className="mt-1 flex gap-2"><input readOnly value={status.redirectUri} aria-label="Endereço de retorno" onFocus={e => e.currentTarget.select()} className="h-11 min-w-0 flex-1 rounded-md border bg-background px-3 text-sm" /><Button type="button" variant="outline" className="min-h-11" onClick={() => void copyRedirect()}>{copied ? <Check /> : <Copy />}{copied ? 'Copiado' : 'Copiar'}</Button></div>
