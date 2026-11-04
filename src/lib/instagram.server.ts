@@ -95,93 +95,39 @@ export async function exchangeCode(fetcher: Fetcher, p: { appId: string; appSecr
   if (!token) throw new InstagramError('troca', { step: 'trocar_codigo', status: 200 });
   return { token };
 }
-/** Turns the short login token into a long-lived one. Page tokens taken from a long-lived token do not expire. */
-export async function exchangeForLongLived(fetcher: Fetcher, p: { appId: string; appSecret: string; shortToken: string }) {
-  const json = await graphGet(fetcher, graphUrl('/oauth/access_token', { grant_type: 'fb_exchange_token', client_id: p.appId, client_secret: p.appSecret, fb_exchange_token: p.shortToken }), 'troca', 'token_longo');
-  const token = text(json['access_token']);
-  if (!token) throw new InstagramError('troca', { step: 'token_longo', status: 200 });
-  return { token, expiresInSeconds: num(json['expires_in']) };
-}
 export async function fetchGrantedPermissions(fetcher: Fetcher, token: string): Promise<string[]> {
   const json = await graphGet(fetcher, graphUrl('/me/permissions', { access_token: token }), 'perfil', 'permissoes');
   const data = Array.isArray(json['data']) ? (json['data'] as unknown[]) : [];
   return data.flatMap(item => (item && typeof item === 'object' && (item as Record<string, unknown>)['status'] === 'granted' ? [String((item as Record<string, unknown>)['permission'])] : []));
 }
 
-export type DiscoveredAccount = { pageId: string; pageName: string | null; pageToken: string; igUserId: string; igUsername: string | null };
-/** Pages the user authorized, keeping the ones that have a professional Instagram account linked. */
-export async function discoverAccounts(fetcher: Fetcher, token: string): Promise<{ accounts: DiscoveredAccount[]; pagesSeen: number }> {
-  const json = await graphGet(fetcher, graphUrl('/me/accounts', { fields: 'id,name,access_token,instagram_business_account{id,username}', limit: '100', access_token: token }), 'perfil', 'paginas');
-  const pages = Array.isArray(json['data']) ? (json['data'] as unknown[]) : [];
-  const accounts: DiscoveredAccount[] = [];
-  for (const raw of pages) {
-    if (!raw || typeof raw !== 'object') continue;
-    const page = raw as Record<string, unknown>;
-    const instagram = page['instagram_business_account'];
-    const igId = instagram && typeof instagram === 'object' ? text((instagram as Record<string, unknown>)['id']) : null;
-    const pageId = text(page['id']); const pageToken = text(page['access_token']);
-    if (!igId || !pageId || !pageToken) continue;
-    accounts.push({ pageId, pageName: text(page['name']), pageToken, igUserId: igId, igUsername: text((instagram as Record<string, unknown>)['username']) });
-  }
-  return { accounts, pagesSeen: pages.length };
-}
-
-export type GrantedScope = { scope: string; ids: string[] };
-export type TokenInfo = { type: string | null; scopes: GrantedScope[] };
-/** What Meta says about the token itself (asked with the app's own id|secret). Holds only ids and names, never a token. */
-export async function fetchTokenInfo(fetcher: Fetcher, p: { appId: string; appSecret: string; token: string }): Promise<TokenInfo> {
-  const json = await graphGet(fetcher, graphUrl('/debug_token', { input_token: p.token, access_token: `${p.appId}|${p.appSecret}` }), 'perfil', 'ler_token');
-  const data = json['data'] && typeof json['data'] === 'object' ? (json['data'] as Record<string, unknown>) : {};
-  const raw = Array.isArray(data['granular_scopes']) ? (data['granular_scopes'] as unknown[]) : [];
-  const scopes: GrantedScope[] = [];
-  for (const item of raw) {
-    if (!item || typeof item !== 'object') continue;
-    const entry = item as Record<string, unknown>;
-    const ids: string[] = [];
-    for (const id of Array.isArray(entry['target_ids']) ? (entry['target_ids'] as unknown[]) : []) {
-      const value = typeof id === 'string' ? id : typeof id === 'number' ? String(id) : null;
-      if (value && /^\d+$/.test(value) && !ids.includes(value)) ids.push(value);
-    }
-    scopes.push({ scope: String(entry['scope'] ?? ''), ids });
-  }
-  return { type: text(data['type']), scopes };
-}
+export type SharedAccount = { igUserId: string; username: string | null };
 /**
- * Unified Login: no Facebook Page. The token belongs to the client's business portfolio and the Instagram accounts the
- * client shared are listed in the token's "granular scopes".
+ * Unified Login (Meta docs, "Authentication and access tokens"): the token is a Business Integration System User token, so
+ * "/me" is the system user, not the Instagram account. The accounts the client shared come from /me/assigned_instagram_accounts.
  */
-export async function discoverSharedInstagramIds(fetcher: Fetcher, p: { appId: string; appSecret: string; token: string }): Promise<string[]> {
-  const info = await fetchTokenInfo(fetcher, p);
-  const ids: string[] = [];
-  for (const entry of info.scopes) if (entry.scope.startsWith('instagram_')) for (const id of entry.ids) if (!ids.includes(id)) ids.push(id);
-  return ids;
-}
-/** Where the portfolio keeps its Instagram accounts. Each edge is tried on its own and the outcome is kept for the history. */
-const PORTFOLIO_EDGES = ['instagram_business_accounts', 'owned_instagram_accounts', 'instagram_accounts'] as const;
-export type PortfolioTry = { portfolio: string; edge: string; found: number; status?: number; meta?: MetaError | null };
-export async function discoverPortfolioAccounts(fetcher: Fetcher, token: string, portfolioIds: string[]): Promise<{ accounts: { igUserId: string; username: string | null }[]; tries: PortfolioTry[] }> {
-  const accounts: { igUserId: string; username: string | null }[] = []; const tries: PortfolioTry[] = [];
-  for (const portfolio of portfolioIds.slice(0, 5)) {
-    for (const edge of PORTFOLIO_EDGES) {
-      try {
-        const json = await graphGet(fetcher, graphUrl(`/${encodeURIComponent(portfolio)}/${edge}`, { fields: 'id,username', limit: '100', access_token: token }), 'perfil', 'portfolio');
-        const list = Array.isArray(json['data']) ? (json['data'] as unknown[]) : [];
-        let found = 0;
-        for (const item of list) {
-          if (!item || typeof item !== 'object') continue;
-          const id = text((item as Record<string, unknown>)['id']);
-          if (!id || accounts.some(account => account.igUserId === id)) continue;
-          accounts.push({ igUserId: id, username: text((item as Record<string, unknown>)['username']) }); found++;
-        }
-        tries.push({ portfolio, edge, found });
-        if (accounts.length) break;
-      } catch (error) {
-        tries.push({ portfolio, edge, found: 0, ...(error instanceof InstagramError ? { status: error.detail.status, meta: error.detail.meta ?? null } : {}) });
+export async function discoverAssignedAccounts(fetcher: Fetcher, token: string): Promise<{ accounts: SharedAccount[]; tries: Detail[] }> {
+  const tries: Detail[] = [];
+  // Ask for the username too; if Meta refuses the field list, ask again with no fields so the ids still come back.
+  for (const fields of ['id,username', null] as const) {
+    try {
+      const params: Record<string, string> = { limit: '100', access_token: token };
+      if (fields) params['fields'] = fields;
+      const json = await graphGet(fetcher, graphUrl('/me/assigned_instagram_accounts', params), 'perfil', 'contas_atribuidas');
+      const list = Array.isArray(json['data']) ? (json['data'] as unknown[]) : [];
+      const accounts: SharedAccount[] = [];
+      for (const item of list) {
+        if (!item || typeof item !== 'object') continue;
+        const id = text((item as Record<string, unknown>)['id']);
+        if (id && !accounts.some(account => account.igUserId === id)) accounts.push({ igUserId: id, username: text((item as Record<string, unknown>)['username']) });
       }
+      tries.push({ step: 'contas_atribuidas', fields: fields ?? 'nenhum', encontradas: accounts.length });
+      return { accounts, tries };
+    } catch (error) {
+      tries.push(error instanceof InstagramError ? { ...error.detail, fields: fields ?? 'nenhum' } : { step: 'contas_atribuidas', fields: fields ?? 'nenhum' });
     }
-    if (accounts.length) break;
   }
-  return { accounts, tries };
+  return { accounts: [], tries };
 }
 /** Asks the Instagram account itself, which proves the saved access really works. */
 export async function verifyAccount(fetcher: Fetcher, token: string, igUserId: string) {
@@ -294,52 +240,28 @@ export async function completeInstagramLogin(p: { admin: Admin; userId: string; 
   try {
     const app = await loadAppCredentials(p.admin, p.userId, p.masterKey);
     if (!app) return { ok: false, code: 'app' };
-    const short = await exchangeCode(fetcher, { appId: app.appId, appSecret: app.appSecret, redirectUri: p.redirectUri, code: p.code });
+    // The login hands over a Business Integration System User token. It is used as received (no long-lived exchange).
+    const { token } = await exchangeCode(fetcher, { appId: app.appId, appSecret: app.appSecret, redirectUri: p.redirectUri, code: p.code });
     diagnostics['codigo_trocado'] = true;
-    // Unified Login hands over a Business Integration System User token, which does not expire and needs no long-lived exchange.
-    // Older configurations (Facebook user token) still get the exchange; if it is refused, the token received is kept.
-    let token = short.token;
-    await exchangeForLongLived(fetcher, { appId: app.appId, appSecret: app.appSecret, shortToken: short.token })
-      .then(long => { token = long.token; diagnostics['token_longo'] = true; })
-      .catch((error: unknown) => { diagnostics['token_longo'] = false; diagnostics['token_longo_erro'] = error instanceof InstagramError ? error.detail : true; });
-    // A failure to list permissions is not fatal: finding the account below shows whether the access works.
+    // A failure to list permissions is not fatal: the account search below shows whether the access works.
     const granted = await fetchGrantedPermissions(fetcher, token).catch((error: unknown) => { diagnostics['permissoes_erro'] = error instanceof InstagramError ? error.detail : true; return null; });
     if (granted) {
       diagnostics['permissoes'] = granted;
       const missing = REQUIRED_PERMISSIONS.filter(permission => !granted.includes(permission));
       if (missing.length) { diagnostics['permissoes_faltando'] = missing; await record('Permissões insuficientes'); return { ok: false, code: 'permissao' }; }
     }
-    // 1) Unified Login: ask Meta what the token holds (no Page involved).
-    const info = await fetchTokenInfo(fetcher, { appId: app.appId, appSecret: app.appSecret, token })
-      .catch((error: unknown) => { diagnostics['ler_token_erro'] = error instanceof InstagramError ? error.detail : true; return null; });
-    if (info) diagnostics['token'] = { tipo: info.type, escopos: info.scopes.map(entry => ({ escopo: entry.scope, ids: entry.ids })) };
-    const sharedIds = info ? info.scopes.filter(entry => entry.scope.startsWith('instagram_')).flatMap(entry => entry.ids).filter((id, index, all) => all.indexOf(id) === index) : [];
-    diagnostics['contas_compartilhadas'] = sharedIds.length;
-    let found: { igUserId: string; username: string | null } | null = sharedIds[0] ? { igUserId: sharedIds[0], username: null } : null;
-    // 2) The portfolio the client chose lists its Instagram accounts.
-    if (!found && info) {
-      const businessIds = info.scopes.filter(entry => entry.scope === 'business_management').flatMap(entry => entry.ids);
-      const portfolioIds = (businessIds.length ? businessIds : info.scopes.flatMap(entry => entry.ids)).filter((id, index, all) => all.indexOf(id) === index);
-      if (portfolioIds.length) {
-        const portfolio = await discoverPortfolioAccounts(fetcher, token, portfolioIds);
-        diagnostics['portfolio_tentativas'] = portfolio.tries;
-        found = portfolio.accounts[0] ?? null;
-      }
+    const { accounts, tries } = await discoverAssignedAccounts(fetcher, token);
+    diagnostics['tentativas'] = tries; diagnostics['contas_compartilhadas'] = accounts.length;
+    const chosen = accounts[0];
+    if (!chosen) {
+      const failed = tries.every(attempt => attempt.status !== undefined || attempt.network);
+      await record(failed ? 'Não foi possível listar as contas do Instagram' : 'Nenhuma conta do Instagram encontrada');
+      return { ok: false, code: failed ? 'perfil' : 'sem_instagram' };
     }
-    if (found) {
-      const verified = await verifyAccount(fetcher, token, found.igUserId).catch((error: unknown) => { diagnostics['verificar_erro'] = error instanceof InstagramError ? error.detail : true; return { username: found?.username ?? null }; });
-      const username = verified.username ?? found.username;
-      await saveConnectedAccount(p.admin, p.userId, p.masterKey, { igUserId: found.igUserId, username, pageId: null, token, issuedAt: now, expiresAt: null });
-      diagnostics['modo'] = 'unificado'; diagnostics['usuario'] = username;
-    } else {
-      // 3) Older configurations: Pages that have a professional Instagram account linked.
-      const { accounts, pagesSeen } = await discoverAccounts(fetcher, token);
-      diagnostics['paginas'] = pagesSeen; diagnostics['contas_instagram'] = accounts.length;
-      const chosen = accounts[0];
-      if (!chosen) { await record('Nenhuma conta do Instagram encontrada'); return { ok: false, code: 'sem_instagram' }; }
-      await saveConnectedAccount(p.admin, p.userId, p.masterKey, { igUserId: chosen.igUserId, username: chosen.igUsername, pageId: chosen.pageId, token: chosen.pageToken, issuedAt: now, expiresAt: null });
-      diagnostics['modo'] = 'paginas'; diagnostics['usuario'] = chosen.igUsername;
-    }
+    const verified = await verifyAccount(fetcher, token, chosen.igUserId).catch((error: unknown) => { diagnostics['verificar_erro'] = error instanceof InstagramError ? error.detail : true; return { username: null }; });
+    const username = verified.username ?? chosen.username;
+    await saveConnectedAccount(p.admin, p.userId, p.masterKey, { igUserId: chosen.igUserId, username, pageId: null, token, issuedAt: now, expiresAt: null });
+    diagnostics['usuario'] = username;
     await record('Conta conectada');
     return { ok: true };
   } catch (error) {
