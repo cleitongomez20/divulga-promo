@@ -175,6 +175,7 @@ describe('connecting the account', () => {
     const perms = options.permissions ?? ['instagram_basic', 'instagram_content_publish', 'pages_show_list', 'public_profile'];
     const accounts = options.accounts ?? [{ id: '17841405793187218', username: 'minha.loja' }];
     if (url.includes('/oauth/access_token')) return options.failAt === 'code' ? json({ error: { code: 100, message: 'bad code' } }, 400) : json({ access_token: 'SYSTEM-USER-TOKEN' });
+    if (url.includes('fields=client_business_id')) return json({ client_business_id: '2020202020', id: '9' });
     if (url.includes('/me/permissions')) return options.failAt === 'perms' ? json({}, 500) : json({ data: perms.map(permission => ({ permission, status: 'granted' })) });
     if (url.includes('/me/assigned_instagram_accounts')) return options.failAt === 'accounts' ? json({ error: { code: 200, message: 'denied' } }, 400) : json(typeof accounts === 'string' ? accounts : { data: accounts });
     if (url.includes('/17841405793187218?')) return json({ id: '17841405793187218', username: 'minha.loja' });
@@ -193,7 +194,7 @@ describe('connecting the account', () => {
     expect(await getPublishingToken(db.admin, USER, KEY)).toEqual({ token: 'SYSTEM-USER-TOKEN', igUserId: '17841405793187218', pageId: null });
     expect(JSON.stringify(db.tables)).not.toContain('SYSTEM-USER-TOKEN');
     expect(db.tables['instagram_accounts']?.[0]).toMatchObject({ status: 'connected', user_id: USER, token_expires_at: null });
-    expect(lastLog(db)).toMatchObject({ result: 'Conta conectada', details: { contas_compartilhadas: 1, usuario: 'minha.loja' } });
+    expect(lastLog(db)).toMatchObject({ result: 'Conta conectada', details: { contas_compartilhadas: 1, usuario: 'minha.loja', empresa_cliente: '2020202020' } });
     expect(JSON.stringify(db.tables['activity_log'])).not.toContain('SYSTEM-USER-TOKEN');
   });
   it('keeps a 17-digit account id exact when Meta sends it as a number', async () => {
@@ -210,7 +211,7 @@ describe('connecting the account', () => {
   it('says so when the client shared no Instagram account', async () => {
     const db = fakeAdmin(); await saveAppCredentials(db.admin, USER, KEY, APP);
     expect(await login(db, meta({ accounts: [] }))).toEqual({ ok: false, code: 'sem_instagram' });
-    expect(lastLog(db).details).toMatchObject({ contas_compartilhadas: 0 });
+    expect(lastLog(db).details).toMatchObject({ contas_compartilhadas: 0, empresa_cliente: '2020202020', tentativas: [{ encontradas: 0, itens_recebidos: 0, chaves: ['data'] }] });
   });
   it('records which step failed, with what Meta answered', async () => {
     const db = fakeAdmin();
