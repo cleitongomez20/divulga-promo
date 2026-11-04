@@ -101,6 +101,14 @@ export async function fetchGrantedPermissions(fetcher: Fetcher, token: string): 
   return data.flatMap(item => (item && typeof item === 'object' && (item as Record<string, unknown>)['status'] === 'granted' ? [String((item as Record<string, unknown>)['permission'])] : []));
 }
 
+/** The business portfolio the token belongs to (Meta docs: /me?fields=client_business_id). Not fatal if it cannot be read. */
+export async function fetchClientBusinessId(fetcher: Fetcher, token: string): Promise<{ clientBusinessId: string | null; detail: Detail | null }> {
+  try {
+    const json = await graphGet(fetcher, graphUrl('/me', { fields: 'client_business_id', access_token: token }), 'perfil', 'empresa_cliente');
+    const raw = json['client_business_id'];
+    return { clientBusinessId: typeof raw === 'string' ? raw : typeof raw === 'number' ? String(raw) : null, detail: null };
+  } catch (error) { return { clientBusinessId: null, detail: error instanceof InstagramError ? error.detail : { step: 'empresa_cliente' } }; }
+}
 export type SharedAccount = { igUserId: string; username: string | null };
 /**
  * Unified Login (Meta docs, "Authentication and access tokens"): the token is a Business Integration System User token, so
@@ -121,7 +129,7 @@ export async function discoverAssignedAccounts(fetcher: Fetcher, token: string):
         const id = text((item as Record<string, unknown>)['id']);
         if (id && !accounts.some(account => account.igUserId === id)) accounts.push({ igUserId: id, username: text((item as Record<string, unknown>)['username']) });
       }
-      tries.push({ step: 'contas_atribuidas', fields: fields ?? 'nenhum', encontradas: accounts.length });
+      tries.push({ step: 'contas_atribuidas', fields: fields ?? 'nenhum', encontradas: accounts.length, itens_recebidos: list.length, chaves: Object.keys(json) });
       return { accounts, tries };
     } catch (error) {
       tries.push(error instanceof InstagramError ? { ...error.detail, fields: fields ?? 'nenhum' } : { step: 'contas_atribuidas', fields: fields ?? 'nenhum' });
@@ -250,6 +258,8 @@ export async function completeInstagramLogin(p: { admin: Admin; userId: string; 
       const missing = REQUIRED_PERMISSIONS.filter(permission => !granted.includes(permission));
       if (missing.length) { diagnostics['permissoes_faltando'] = missing; await record('Permissões insuficientes'); return { ok: false, code: 'permissao' }; }
     }
+    const business = await fetchClientBusinessId(fetcher, token);
+    diagnostics['empresa_cliente'] = business.clientBusinessId ?? business.detail;
     const { accounts, tries } = await discoverAssignedAccounts(fetcher, token);
     diagnostics['tentativas'] = tries; diagnostics['contas_compartilhadas'] = accounts.length;
     const chosen = accounts[0];
