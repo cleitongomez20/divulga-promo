@@ -1,10 +1,10 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useServerFn } from '@tanstack/react-start';
-import { Instagram, Copy, Check, LoaderCircle, RefreshCw, Trash2, Link2, Save } from 'lucide-react';
+import { Instagram, Copy, Check, LoaderCircle, Trash2, Link2, Save, Stethoscope } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { PasswordInput } from '@/components/password-input';
-import { getInstagramStatus, saveInstagramApp, startInstagramLogin, refreshInstagramAccess, disconnectInstagram, removeInstagramApp } from '@/lib/instagram.functions';
+import { getInstagramStatus, saveInstagramApp, startInstagramLogin, checkInstagramConnection, disconnectInstagram, removeInstagramApp } from '@/lib/instagram.functions';
 import { instagramAppSchema, instagramErrorMessage } from '@/lib/instagram';
 
 const fieldClass = 'h-11 w-full rounded-md border bg-background px-3 text-base';
@@ -14,17 +14,18 @@ export function InstagramCard() {
   const { data: status, isLoading } = useQuery({ queryKey: ['instagram'], queryFn: () => getInstagramStatus(), staleTime: 0 });
   const save = useServerFn(saveInstagramApp);
   const start = useServerFn(startInstagramLogin);
-  const refresh = useServerFn(refreshInstagramAccess);
+  const check = useServerFn(checkInstagramConnection);
   const disconnect = useServerFn(disconnectInstagram);
   const removeApp = useServerFn(removeInstagramApp);
   const [appId, setAppId] = useState('');
   const [appSecret, setAppSecret] = useState('');
+  const [configId, setConfigId] = useState('');
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState('');
   const [notice, setNotice] = useState('');
   const [copied, setCopied] = useState(false);
 
-  // Message left by the return from the Instagram authorization window (the address is cleaned afterwards).
+  // Message left by the return from the login window (the address is cleaned afterwards).
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const result = params.get('instagram');
@@ -46,9 +47,9 @@ export function InstagramCard() {
   }
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const parsed = instagramAppSchema.safeParse({ appId, appSecret });
+    const parsed = instagramAppSchema.safeParse({ appId, appSecret, configId });
     if (!parsed.success) { setNotice(parsed.error.issues[0]?.message ?? 'Confira os dados.'); return; }
-    if (await act('save', () => save({ data: parsed.data }))) { setAppId(''); setAppSecret(''); setEditing(false); }
+    if (await act('save', () => save({ data: parsed.data }))) { setAppId(''); setAppSecret(''); setConfigId(''); setEditing(false); }
   }
   async function connect() {
     setBusy('connect'); setNotice('');
@@ -66,8 +67,7 @@ export function InstagramCard() {
 
   const account = status?.account ?? null;
   const showForm = Boolean(status) && (!status?.appConfigured || editing);
-  const label = account ? (account.expired ? 'Acesso expirado' : 'Conectado') : status?.appConfigured ? 'Pronto para conectar' : 'Falta configurar';
-  const date = (iso: string) => new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short' }).format(new Date(iso));
+  const label = account ? (account.expired ? 'Precisa conectar de novo' : 'Conectado') : status?.appConfigured ? 'Pronto para conectar' : 'Falta configurar';
 
   return <section aria-labelledby="instagram-title" className="rounded-lg border bg-card p-5 sm:p-7">
     <div className="flex items-center justify-between gap-4">
@@ -77,39 +77,40 @@ export function InstagramCard() {
 
     {account && <div className="mt-6 space-y-1 text-sm">
       <p className="font-medium">{account.username ? `@${account.username}` : 'Conta conectada'}</p>
-      {account.expiresAt && <p className="text-muted-foreground">{account.expired ? `O acesso expirou em ${date(account.expiresAt)}.` : `Acesso válido por mais ${account.daysLeft} dias (até ${date(account.expiresAt)}).`}</p>}
+      <p className="text-muted-foreground">{account.expired ? 'O acesso deixou de valer. Conecte de novo.' : 'Este acesso não tem prazo de validade. Se um dia parar de funcionar, o app avisa e você conecta de novo.'}</p>
     </div>}
 
     {showForm && status && <div className="mt-6 space-y-5">
       <details className="rounded-md border p-4 text-sm" open={!status.appConfigured}>
-        <summary className="cursor-pointer font-medium">Como criar o app na Meta (passo a passo)</summary>
+        <summary className="cursor-pointer font-medium">Como preparar o app na Meta (passo a passo)</summary>
         <ol className="mt-3 list-decimal space-y-2 pl-5 text-muted-foreground">
-          <li>Entre em <a className="underline" href="https://developers.facebook.com/apps/creation/" target="_blank" rel="noopener noreferrer">developers.facebook.com</a> e crie um app do tipo <strong>Empresa (Business)</strong>.</li>
-          <li>No app, adicione o produto <strong>Instagram</strong> e abra <strong>API setup with Instagram login</strong>.</li>
-          <li>Em <strong>Set up Instagram business login</strong>, adicione como <strong>OAuth redirect URI</strong> o endereço abaixo, exatamente igual.</li>
-          <li>Na mesma tela, copie o <strong>Instagram App ID</strong> e o <strong>Instagram App Secret</strong> (não são o ID e a chave do app da Meta em Configurações básicas) e cole aqui.</li>
-          <li>Em <strong>App roles &gt; Roles</strong>, adicione sua conta do Instagram como <strong>Instagram Tester</strong> e aceite o convite no Instagram, em Configurações &gt; Apps e sites.</li>
+          <li>Em <a className="underline" href="https://developers.facebook.com/apps/" target="_blank" rel="noopener noreferrer">developers.facebook.com</a>, abra o seu app e vá em <strong>Configurações do app &gt; Básico</strong>. Copie o <strong>ID do app</strong> e a <strong>Chave secreta do app</strong> (clique em Mostrar).</li>
+          <li>Vá em <strong>Casos de uso</strong>, abra <strong>Gerenciar mensagens e conteúdo no Instagram &gt; Personalizar</strong> e entre em <strong>Configuração da API com login do Facebook</strong>.</li>
+          <li>Crie uma <strong>configuração de login</strong>. Escolha o token de acesso <strong>do usuário</strong> (não o do usuário do sistema) e as permissões <strong>instagram_basic</strong>, <strong>instagram_content_publish</strong>, <strong>pages_show_list</strong> e <strong>pages_read_engagement</strong>. Copie o <strong>ID da configuração</strong>.</li>
+          <li>Cadastre o endereço abaixo como <strong>URI de redirecionamento OAuth válido</strong>.</li>
+          <li>O Instagram precisa ser <strong>profissional</strong> e estar <strong>vinculado a uma Página do Facebook</strong> que você administra. Na tela de autorização, selecione essa Página e o Instagram.</li>
         </ol>
-        <p className="mt-3 font-medium">Endereço de retorno (OAuth redirect URI)</p>
+        <p className="mt-3 font-medium">Endereço de retorno (URI de redirecionamento)</p>
         <div className="mt-1 flex gap-2"><input readOnly value={status.redirectUri} aria-label="Endereço de retorno" onFocus={e => e.currentTarget.select()} className="h-11 min-w-0 flex-1 rounded-md border bg-background px-3 text-sm" /><Button type="button" variant="outline" className="min-h-11" onClick={() => void copyRedirect()}>{copied ? <Check /> : <Copy />}{copied ? 'Copiado' : 'Copiar'}</Button></div>
       </details>
       <form onSubmit={e => void submit(e)} className="space-y-4">
-        <label className="grid gap-1 text-sm font-medium">Instagram App ID<input value={appId} onChange={e => setAppId(e.target.value)} inputMode="numeric" autoComplete="off" placeholder="Só números" className={fieldClass} /></label>
-        <label className="grid gap-1 text-sm font-medium">Instagram App Secret<PasswordInput value={appSecret} onChange={e => setAppSecret(e.target.value)} autoComplete="off" placeholder="Letras e números" /></label>
+        <label className="grid gap-1 text-sm font-medium">ID do app (Meta)<input value={appId} onChange={e => setAppId(e.target.value)} inputMode="numeric" autoComplete="off" placeholder="Só números" className={fieldClass} /></label>
+        <label className="grid gap-1 text-sm font-medium">Chave secreta do app (Meta)<PasswordInput value={appSecret} onChange={e => setAppSecret(e.target.value)} autoComplete="off" placeholder="Letras e números" /></label>
+        <label className="grid gap-1 text-sm font-medium">ID da configuração de login<input value={configId} onChange={e => setConfigId(e.target.value)} inputMode="numeric" autoComplete="off" placeholder="Só números" className={fieldClass} /></label>
         <div className="flex flex-wrap gap-2">
-          <Button type="submit" disabled={busy !== ''} className="min-h-11">{busy === 'save' ? <LoaderCircle className="animate-spin" /> : <Save />}Salvar credenciais do app</Button>
+          <Button type="submit" disabled={busy !== ''} className="min-h-11">{busy === 'save' ? <LoaderCircle className="animate-spin" /> : <Save />}Salvar dados do app</Button>
           {editing && <Button type="button" variant="ghost" className="min-h-11" onClick={() => setEditing(false)}>Cancelar</Button>}
         </div>
       </form>
     </div>}
 
     {!showForm && status && <div className="mt-6 space-y-4">
-      {status.maskedAppId && <p className="text-sm text-muted-foreground">App da Meta: {status.maskedAppId} (segredo salvo)</p>}
+      {status.maskedAppId && <p className="text-sm text-muted-foreground">App da Meta: {status.maskedAppId} · configuração {status.configId} (segredo salvo)</p>}
       <div className="flex flex-wrap gap-2">
         {(!account || account.expired) && <Button className="min-h-11" onClick={() => void connect()} disabled={busy !== ''}>{busy === 'connect' ? <LoaderCircle className="animate-spin" /> : <Link2 />}{account ? 'Conectar de novo' : 'Conectar Instagram'}</Button>}
-        {account && !account.expired && <Button variant="outline" className="min-h-11" onClick={() => void act('refresh', () => refresh())} disabled={busy !== ''}>{busy === 'refresh' ? <LoaderCircle className="animate-spin" /> : <RefreshCw />}Renovar acesso</Button>}
+        {account && !account.expired && <Button variant="outline" className="min-h-11" onClick={() => void act('check', () => check())} disabled={busy !== ''}>{busy === 'check' ? <LoaderCircle className="animate-spin" /> : <Stethoscope />}Testar conexão</Button>}
         {account && <Button variant="outline" className="min-h-11" onClick={() => void act('disconnect', () => disconnect())} disabled={busy !== ''}>{busy === 'disconnect' ? <LoaderCircle className="animate-spin" /> : <Trash2 />}Desconectar</Button>}
-        <Button variant="ghost" className="min-h-11" onClick={() => setEditing(true)} disabled={busy !== ''}>Trocar credenciais do app</Button>
+        <Button variant="ghost" className="min-h-11" onClick={() => setEditing(true)} disabled={busy !== ''}>Trocar dados do app</Button>
         <Button variant="ghost" className="min-h-11" onClick={() => void act('removeApp', () => removeApp())} disabled={busy !== ''}>Remover app</Button>
       </div>
     </div>}

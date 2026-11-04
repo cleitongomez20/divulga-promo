@@ -1,10 +1,10 @@
 import { createServerFn } from '@tanstack/react-start';
 import { requireSupabaseAuth } from '@/integrations/supabase/auth-middleware';
-import { CALLBACK_PATH, daysLeft, instagramAppSchema, instagramErrorMessage, maskId } from './instagram';
+import { CALLBACK_PATH, instagramAppSchema, instagramErrorMessage, maskId } from './instagram';
 
 export type InstagramStatus = {
-  appConfigured: boolean; maskedAppId: string | null; redirectUri: string;
-  account: { username: string | null; expiresAt: string | null; daysLeft: number; expired: boolean } | null;
+  appConfigured: boolean; maskedAppId: string | null; configId: string | null; redirectUri: string;
+  account: { username: string | null; expired: boolean } | null;
 };
 export type ActionResult = { status: 'ok'; message?: string } | { status: 'error'; message: string };
 
@@ -22,24 +22,24 @@ const failure = async (error: unknown): Promise<ActionResult> => {
   const { InstagramError } = await import('./instagram.server');
   return { status: 'error', message: error instanceof InstagramError ? instagramErrorMessage(error.code) : error instanceof Error && error.message ? error.message : 'Não foi possível concluir agora. Tente de novo.' };
 };
-/** Spacing between edits for one user, so the buttons cannot be hammered. */
+/** Spacing between actions for one user, so the buttons cannot be hammered. */
 async function tooSoon(db: Awaited<ReturnType<typeof admin>>, userId: string) {
   const { data } = await db.rpc('reserve_connector_slot', { p_scope: `instagram-edit:${userId}`, p_interval_ms: 3000 });
   return data !== 0;
 }
 
 export const getInstagramStatus = createServerFn({ method: 'GET' }).middleware([requireSupabaseAuth]).handler(async ({ context }): Promise<InstagramStatus> => {
-  const db = await admin(); const now = Date.now();
+  const db = await admin();
   const server = await import('./instagram.server');
   const key = process.env['CONNECTOR_ENCRYPTION_KEY'];
-  let maskedAppId: string | null = null; let appConfigured = false;
+  let maskedAppId: string | null = null; let configId: string | null = null;
   if (key) {
-    try { const app = await server.loadAppCredentials(db, context.userId, key); appConfigured = Boolean(app); maskedAppId = app ? maskId(app.appId) : null; } catch { appConfigured = false; }
+    try { const app = await server.loadAppCredentials(db, context.userId, key); maskedAppId = app ? maskId(app.appId) : null; configId = app ? app.configId : null; } catch { maskedAppId = null; }
   }
   const account = await server.loadAccount(db, context.userId);
   return {
-    appConfigured, maskedAppId, redirectUri: `${await origin()}${CALLBACK_PATH}`,
-    account: account ? { username: account.username, expiresAt: account.expiresAt ? new Date(account.expiresAt).toISOString() : null, daysLeft: account.expiresAt ? daysLeft(account.expiresAt, now) : 0, expired: !account.expiresAt || account.expiresAt <= now } : null,
+    appConfigured: maskedAppId !== null, maskedAppId, configId, redirectUri: `${await origin()}${CALLBACK_PATH}`,
+    account: account ? { username: account.username, expired: account.status === 'expired' } : null,
   };
 });
 
@@ -50,8 +50,8 @@ export const saveInstagramApp = createServerFn({ method: 'POST' }).middleware([r
       if (!(await tooSoon(db, context.userId))) return { status: 'error', message: 'Aguarde alguns segundos e tente de novo.' };
       const { saveAppCredentials } = await import('./instagram.server');
       await saveAppCredentials(db, context.userId, masterKey(), data);
-      await db.from('activity_log').insert({ user_id: context.userId, action: 'App do Instagram salvo', result: 'Credenciais do app da Meta salvas', details: {} });
-      return { status: 'ok', message: 'Credenciais do app salvas.' };
+      await db.from('activity_log').insert({ user_id: context.userId, action: 'App da Meta salvo', result: 'Dados do app da Meta salvos', details: {} });
+      return { status: 'ok', message: 'Dados do app salvos.' };
     } catch (error) { return failure(error); }
   });
 
@@ -62,18 +62,23 @@ export const startInstagramLogin = createServerFn({ method: 'POST' }).middleware
     const app = await server.loadAppCredentials(db, context.userId, key);
     if (!app) return { status: 'error', message: instagramErrorMessage('app') };
     const state = await server.signState(context.userId, key);
-    return { status: 'ok', url: server.buildAuthorizeUrl({ appId: app.appId, redirectUri: `${await origin()}${CALLBACK_PATH}`, state }) };
+    return { status: 'ok', url: server.buildAuthorizeUrl({ appId: app.appId, configId: app.configId, redirectUri: `${await origin()}${CALLBACK_PATH}`, state }) };
   } catch (error) { const result = await failure(error); return { status: 'error', message: result.status === 'error' ? result.message : '' }; }
 });
 
-export const refreshInstagramAccess = createServerFn({ method: 'POST' }).middleware([requireSupabaseAuth]).handler(async ({ context }): Promise<ActionResult> => {
+export const checkInstagramConnection = createServerFn({ method: 'POST' }).middleware([requireSupabaseAuth]).handler(async ({ context }): Promise<ActionResult> => {
   try {
     const db = await admin();
     if (!(await tooSoon(db, context.userId))) return { status: 'error', message: 'Aguarde alguns segundos e tente de novo.' };
-    const { refreshAccount } = await import('./instagram.server');
-    const result = await refreshAccount(db, context.userId, masterKey());
-    await db.from('activity_log').insert({ user_id: context.userId, action: 'Acesso do Instagram renovado', result: result.refreshed ? 'Acesso renovado por mais 60 dias' : 'Acesso já estava renovado', details: {} });
-    return { status: 'ok', message: result.refreshed ? 'Acesso renovado por mais 60 dias.' : 'O acesso foi renovado há pouco. Tente de novo amanhã.' };
+    const { checkAccount, InstagramError } = await import('./instagram.server');
+    try {
+      const { username } = await checkAccount(db, context.userId, masterKey());
+      await db.from('activity_log').insert({ user_id: context.userId, action: 'Teste do Instagram', result: 'Conexão funcionando', details: {} });
+      return { status: 'ok', message: username ? `Conexão funcionando com @${username}.` : 'Conexão funcionando.' };
+    } catch (error) {
+      if (error instanceof InstagramError) await db.from('activity_log').insert({ user_id: context.userId, action: 'Teste do Instagram', result: `Falha: ${error.code}`, details: error.detail as never });
+      throw error;
+    }
   } catch (error) { return failure(error); }
 });
 
@@ -92,7 +97,7 @@ export const removeInstagramApp = createServerFn({ method: 'POST' }).middleware(
     const db = await admin();
     const { removeAppCredentials } = await import('./instagram.server');
     await removeAppCredentials(db, context.userId);
-    await db.from('activity_log').insert({ user_id: context.userId, action: 'App do Instagram removido', result: 'Credenciais do app removidas', details: {} });
-    return { status: 'ok', message: 'Credenciais do app removidas.' };
+    await db.from('activity_log').insert({ user_id: context.userId, action: 'App da Meta removido', result: 'Dados do app removidos', details: {} });
+    return { status: 'ok', message: 'Dados do app removidos.' };
   } catch (error) { return failure(error); }
 });
