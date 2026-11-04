@@ -3,7 +3,7 @@ import {
   InstagramError, signState, verifyState, buildAuthorizeUrl, exchangeCode, exchangeForLongLived, fetchGrantedPermissions, discoverAccounts, verifyAccount,
   completeInstagramLogin, discoverSharedInstagramIds, saveAppCredentials, loadAppCredentials, removeAppCredentials, getPublishingToken, checkAccount, loadAccount, disconnectAccount, saveConnectedAccount,
 } from '@/lib/instagram.server';
-import { instagramAppSchema, instagramErrorMessage, maskId, REQUIRED_PERMISSIONS } from '@/lib/instagram';
+import { instagramAppSchema, instagramSecretSchema, instagramErrorMessage, maskId, REQUIRED_PERMISSIONS, CALLBACK_URL, META_APP_ID, META_CONFIG_ID } from '@/lib/instagram';
 import { sealJson, openJson } from '@/lib/secret-box.server';
 
 const KEY = 'chave-mestra-de-teste-com-tamanho-suficiente';
@@ -56,6 +56,19 @@ describe('app data and messages', () => {
     expect(instagramErrorMessage('qualquer-coisa')).toContain('Não foi possível');
     expect(maskId('123456789012345')).toBe('123••••••••••45');
     expect([...REQUIRED_PERMISSIONS]).toEqual(['instagram_basic', 'instagram_content_publish']);
+  });
+});
+
+describe('fixed Meta app values', () => {
+  it('always returns to the published address and asks only for the secret key', () => {
+    expect(CALLBACK_URL).toBe('https://divulga-promo.lovable.app/api/public/instagram-callback');
+    expect(instagramAppSchema.safeParse({ appId: META_APP_ID, appSecret: APP.appSecret, configId: META_CONFIG_ID }).success).toBe(true);
+    expect(instagramSecretSchema.safeParse({ appSecret: APP.appSecret }).success).toBe(true);
+    expect(instagramSecretSchema.safeParse({ appSecret: 'curto' }).success).toBe(false);
+    const url = new URL(buildAuthorizeUrl({ appId: META_APP_ID, configId: META_CONFIG_ID, redirectUri: CALLBACK_URL, state: 'S' }));
+    expect(url.searchParams.get('client_id')).toBe('1621449662157910');
+    expect(url.searchParams.get('config_id')).toBe('1592981445966230');
+    expect(url.searchParams.get('redirect_uri')).toBe(CALLBACK_URL);
   });
 });
 

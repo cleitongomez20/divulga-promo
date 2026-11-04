@@ -1,5 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router';
-import { CALLBACK_PATH } from '@/lib/instagram';
+import { CALLBACK_URL } from '@/lib/instagram';
 
 // The Instagram sends the user back here after the authorization window. There is no login session in this request,
 // so the user is identified by the signed "state" created when the connection started (valid for 15 minutes).
@@ -18,7 +18,7 @@ export const Route = createFileRoute('/api/public/instagram-callback')({
         const code = url.searchParams.get('code');
         if (!code) return back('instagram=erro&motivo=troca');
         const { supabaseAdmin } = await import('@/integrations/supabase/client.server');
-        const result = await completeInstagramLogin({ admin: supabaseAdmin, userId, masterKey, code, redirectUri: `${url.origin}${CALLBACK_PATH}` });
+        const result = await completeInstagramLogin({ admin: supabaseAdmin, userId, masterKey, code, redirectUri: CALLBACK_URL });
         return back(result.ok ? 'instagram=ok' : `instagram=erro&motivo=${result.code}`);
       },
     },
