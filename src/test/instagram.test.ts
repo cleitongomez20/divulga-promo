@@ -180,13 +180,14 @@ describe('calls to the Meta Graph', () => {
 });
 
 describe('connecting the account', () => {
-  const meta = (options: { permissions?: string[]; accounts?: unknown; failAt?: 'code' | 'perms' | 'accounts' } = {}) => asFetch(url => {
+  const meta = (options: { permissions?: string[]; accounts?: unknown; manualOk?: boolean; failAt?: 'code' | 'perms' | 'accounts' } = {}) => asFetch(url => {
     const perms = options.permissions ?? ['instagram_basic', 'instagram_content_publish', 'pages_show_list', 'public_profile'];
     const accounts = options.accounts ?? [{ id: '17841405793187218', username: 'minha.loja' }];
     if (url.includes('/oauth/access_token')) return options.failAt === 'code' ? json({ error: { code: 100, message: 'bad code' } }, 400) : json({ access_token: 'SYSTEM-USER-TOKEN' });
     if (url.includes('fields=client_business_id')) return json({ client_business_id: '2020202020', id: '9' });
     if (url.includes('/me/permissions')) return options.failAt === 'perms' ? json({}, 500) : json({ data: perms.map(permission => ({ permission, status: 'granted' })) });
     if (url.includes('/me/assigned_instagram_accounts')) return options.failAt === 'accounts' ? json({ error: { code: 200, message: 'denied' } }, 400) : json(typeof accounts === 'string' ? accounts : { data: accounts });
+    if (url.includes('/17841401258866570?')) return options.manualOk ? json({ id: '17841401258866570', username: 'cleito' }) : json({ error: { code: 100, message: 'x' } }, 400);
     if (url.includes('/17841405793187218?')) return json({ id: '17841405793187218', username: 'minha.loja' });
     return json({}, 404);
   });
@@ -220,7 +221,13 @@ describe('connecting the account', () => {
   it('says so when the client shared no Instagram account', async () => {
     const db = fakeAdmin(); await saveAppCredentials(db.admin, USER, KEY, APP);
     expect(await login(db, meta({ accounts: [] }))).toEqual({ ok: false, code: 'sem_instagram' });
-    expect(lastLog(db).details).toMatchObject({ contas_compartilhadas: 0, empresa_cliente: '2020202020', tentativas: [{ tentativa: 1, encontradas: 0 }, { tentativa: 2 }, { tentativa: 3 }, { tentativa: 4, encontradas: 0, itens_recebidos: 0, chaves: ['data'] }] });
+    expect(lastLog(db).details).toMatchObject({ sonda_id: [{ id: '17841401258866570', ok: false, status: 400 }], contas_compartilhadas: 0, empresa_cliente: '2020202020', tentativas: [{ tentativa: 1, encontradas: 0 }, { tentativa: 2 }, { tentativa: 3 }, { tentativa: 4, encontradas: 0, itens_recebidos: 0, chaves: ['data'] }] });
+  });
+  it('connects through a known Instagram id when Meta lists nothing but the token can read that account', async () => {
+    const db = fakeAdmin(); await saveAppCredentials(db.admin, USER, KEY, APP);
+    expect(await login(db, meta({ accounts: [], manualOk: true }))).toEqual({ ok: true });
+    expect(await loadAccount(db.admin, USER)).toMatchObject({ igUserId: '17841401258866570', username: 'cleito', pageId: null });
+    expect(lastLog(db).details).toMatchObject({ modo: 'id_manual', sonda_id: [{ id: '17841401258866570', ok: true }] });
   });
   it('records which step failed, with what Meta answered', async () => {
     const db = fakeAdmin();
