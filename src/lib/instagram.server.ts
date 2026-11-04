@@ -1,7 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Database, Json } from '@/integrations/supabase/types';
 import { sealJson, openJson } from './secret-box.server';
-import { GRAPH_VERSION, REQUIRED_PERMISSIONS, type InstagramErrorCode } from './instagram';
+import { GRAPH_VERSION, MANUAL_INSTAGRAM_IDS, REQUIRED_PERMISSIONS, type InstagramErrorCode } from './instagram';
 
 type Admin = SupabaseClient<Database>;
 type Fetcher = typeof fetch;
@@ -277,7 +277,16 @@ export async function completeInstagramLogin(p: { admin: Admin; userId: string; 
     diagnostics['empresa_cliente'] = business.clientBusinessId ?? business.detail;
     const { accounts, tries } = await discoverAssignedAccounts(fetcher, token, { extraTries: 3, delayMs: 2500, ...(p.wait ? { wait: p.wait } : {}) });
     diagnostics['tentativas'] = tries; diagnostics['contas_compartilhadas'] = accounts.length;
-    const chosen = accounts[0];
+    let chosen: SharedAccount | null = accounts[0] ?? null;
+    if (!chosen && MANUAL_INSTAGRAM_IDS.length) {
+      // Meta listed nothing: check whether the token can read an Instagram id known from Business Suite.
+      const probes: Detail[] = [];
+      for (const id of MANUAL_INSTAGRAM_IDS) {
+        try { const { username } = await verifyAccount(fetcher, token, id); probes.push({ step: 'sonda_id', id, ok: true }); chosen = { igUserId: id, username }; break; }
+        catch (error) { probes.push(error instanceof InstagramError ? { ...error.detail, id, ok: false } : { step: 'sonda_id', id, ok: false }); }
+      }
+      diagnostics['sonda_id'] = probes; if (chosen) diagnostics['modo'] = 'id_manual';
+    }
     if (!chosen) {
       const failed = tries.every(attempt => attempt.status !== undefined || attempt.network);
       await record(failed ? 'Não foi possível listar as contas do Instagram' : 'Nenhuma conta do Instagram encontrada');
