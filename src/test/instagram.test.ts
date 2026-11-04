@@ -167,6 +167,8 @@ describe('connecting the account', () => {
     const perms = options.permissions ?? ['instagram_basic', 'instagram_content_publish', 'pages_show_list', 'pages_read_engagement'];
     const pages = options.pages ?? [{ id: '222', name: 'Minha Loja', access_token: 'PAGE-TOKEN', instagram_business_account: { id: '17841405793187218', username: 'minha.loja' } }];
     if (url.includes('/debug_token')) return options.debugFails ? json({ error: { code: 100, message: 'x' } }, 400) : json({ data: { granular_scopes: options.shared ?? [] } });
+    if (url.includes('/555/instagram_business_accounts')) return json({ data: [{ id: 17841405793187218, username: 'loja.portfolio' }] });
+    if (url.includes('/555/')) return json({ error: { code: 100, message: 'edge' } }, 400);
     if (url.includes('/17841405793187218?')) return json({ id: '17841405793187218', username: 'loja.unificada' });
     if (url.includes('grant_type=fb_exchange_token')) return options.failAt === 'long' ? json({ error: { code: 190, message: 'x' } }, 400) : json({ access_token: 'LONG-USER-TOKEN', expires_in: 5184000 });
     if (url.includes('/oauth/access_token')) return options.failAt === 'code' ? json({ error: { code: 100, message: 'bad code' } }, 400) : json({ access_token: 'SHORT-USER-TOKEN' });
@@ -227,6 +229,19 @@ describe('connecting the account', () => {
     expect(lastLog(db).details).toHaveProperty('ler_token_erro');
     const empty = fakeAdmin(); await saveAppCredentials(empty.admin, USER, KEY, APP);
     expect(await login(empty, meta({ pages: [] }))).toEqual({ ok: false, code: 'sem_instagram' });
+  });
+  it('Unified Login: finds the account through the business portfolio when the token lists no Instagram scope', async () => {
+    const db = fakeAdmin(); await saveAppCredentials(db.admin, USER, KEY, APP);
+    const shared = [{ scope: 'business_management', target_ids: ['555'] }, { scope: 'instagram_basic', target_ids: [] }];
+    expect(await login(db, meta({ shared, pages: [] }))).toEqual({ ok: true });
+    expect(await loadAccount(db.admin, USER)).toEqual({ username: 'loja.unificada', igUserId: '17841405793187218', pageId: null, status: 'connected' });
+    expect(lastLog(db).details).toMatchObject({ modo: 'unificado', contas_compartilhadas: 0, token: { escopos: [{ escopo: 'business_management', ids: ['555'] }, { escopo: 'instagram_basic', ids: [] }] }, portfolio_tentativas: [{ portfolio: '555', edge: 'instagram_business_accounts', found: 1 }] });
+  });
+  it('records every portfolio try when nothing is found, so the history shows what Meta answered', async () => {
+    const db = fakeAdmin(); await saveAppCredentials(db.admin, USER, KEY, APP);
+    expect(await login(db, meta({ shared: [{ scope: 'business_management', target_ids: ['777'] }], pages: [] }))).toEqual({ ok: false, code: 'sem_instagram' });
+    expect(lastLog(db).details['portfolio_tentativas']).toHaveLength(3);
+    expect((lastLog(db).details['portfolio_tentativas'] as unknown[])[0]).toMatchObject({ portfolio: '777', edge: 'instagram_business_accounts', found: 0, status: 404 });
   });
   it('reads shared Instagram ids from granular scopes without losing digits', async () => {
     const body = '{"data":{"granular_scopes":[{"scope":"instagram_basic","target_ids":[17841405793187218, "17841400000000001"]},{"scope":"business_management","target_ids":["999"]}]}}';

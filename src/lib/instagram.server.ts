@@ -126,26 +126,62 @@ export async function discoverAccounts(fetcher: Fetcher, token: string): Promise
   return { accounts, pagesSeen: pages.length };
 }
 
-/**
- * Unified Login: no Facebook Page. The token belongs to the client's business portfolio and the Instagram accounts the
- * client shared are listed in the token's "granular scopes" (asked to Meta with the app's own id|secret).
- */
-export async function discoverSharedInstagramIds(fetcher: Fetcher, p: { appId: string; appSecret: string; token: string }): Promise<string[]> {
+export type GrantedScope = { scope: string; ids: string[] };
+export type TokenInfo = { type: string | null; scopes: GrantedScope[] };
+/** What Meta says about the token itself (asked with the app's own id|secret). Holds only ids and names, never a token. */
+export async function fetchTokenInfo(fetcher: Fetcher, p: { appId: string; appSecret: string; token: string }): Promise<TokenInfo> {
   const json = await graphGet(fetcher, graphUrl('/debug_token', { input_token: p.token, access_token: `${p.appId}|${p.appSecret}` }), 'perfil', 'ler_token');
   const data = json['data'] && typeof json['data'] === 'object' ? (json['data'] as Record<string, unknown>) : {};
-  const scopes = Array.isArray(data['granular_scopes']) ? (data['granular_scopes'] as unknown[]) : [];
-  const ids: string[] = [];
-  for (const raw of scopes) {
-    if (!raw || typeof raw !== 'object') continue;
-    const entry = raw as Record<string, unknown>;
-    const scope = String(entry['scope'] ?? '');
-    if (!scope.startsWith('instagram_')) continue;
+  const raw = Array.isArray(data['granular_scopes']) ? (data['granular_scopes'] as unknown[]) : [];
+  const scopes: GrantedScope[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const entry = item as Record<string, unknown>;
+    const ids: string[] = [];
     for (const id of Array.isArray(entry['target_ids']) ? (entry['target_ids'] as unknown[]) : []) {
       const value = typeof id === 'string' ? id : typeof id === 'number' ? String(id) : null;
       if (value && /^\d+$/.test(value) && !ids.includes(value)) ids.push(value);
     }
+    scopes.push({ scope: String(entry['scope'] ?? ''), ids });
   }
+  return { type: text(data['type']), scopes };
+}
+/**
+ * Unified Login: no Facebook Page. The token belongs to the client's business portfolio and the Instagram accounts the
+ * client shared are listed in the token's "granular scopes".
+ */
+export async function discoverSharedInstagramIds(fetcher: Fetcher, p: { appId: string; appSecret: string; token: string }): Promise<string[]> {
+  const info = await fetchTokenInfo(fetcher, p);
+  const ids: string[] = [];
+  for (const entry of info.scopes) if (entry.scope.startsWith('instagram_')) for (const id of entry.ids) if (!ids.includes(id)) ids.push(id);
   return ids;
+}
+/** Where the portfolio keeps its Instagram accounts. Each edge is tried on its own and the outcome is kept for the history. */
+const PORTFOLIO_EDGES = ['instagram_business_accounts', 'owned_instagram_accounts', 'instagram_accounts'] as const;
+export type PortfolioTry = { portfolio: string; edge: string; found: number; status?: number; meta?: MetaError | null };
+export async function discoverPortfolioAccounts(fetcher: Fetcher, token: string, portfolioIds: string[]): Promise<{ accounts: { igUserId: string; username: string | null }[]; tries: PortfolioTry[] }> {
+  const accounts: { igUserId: string; username: string | null }[] = []; const tries: PortfolioTry[] = [];
+  for (const portfolio of portfolioIds.slice(0, 5)) {
+    for (const edge of PORTFOLIO_EDGES) {
+      try {
+        const json = await graphGet(fetcher, graphUrl(`/${encodeURIComponent(portfolio)}/${edge}`, { fields: 'id,username', limit: '100', access_token: token }), 'perfil', 'portfolio');
+        const list = Array.isArray(json['data']) ? (json['data'] as unknown[]) : [];
+        let found = 0;
+        for (const item of list) {
+          if (!item || typeof item !== 'object') continue;
+          const id = text((item as Record<string, unknown>)['id']);
+          if (!id || accounts.some(account => account.igUserId === id)) continue;
+          accounts.push({ igUserId: id, username: text((item as Record<string, unknown>)['username']) }); found++;
+        }
+        tries.push({ portfolio, edge, found });
+        if (accounts.length) break;
+      } catch (error) {
+        tries.push({ portfolio, edge, found: 0, ...(error instanceof InstagramError ? { status: error.detail.status, meta: error.detail.meta ?? null } : {}) });
+      }
+    }
+    if (accounts.length) break;
+  }
+  return { accounts, tries };
 }
 /** Asks the Instagram account itself, which proves the saved access really works. */
 export async function verifyAccount(fetcher: Fetcher, token: string, igUserId: string) {
@@ -273,17 +309,30 @@ export async function completeInstagramLogin(p: { admin: Admin; userId: string; 
       const missing = REQUIRED_PERMISSIONS.filter(permission => !granted.includes(permission));
       if (missing.length) { diagnostics['permissoes_faltando'] = missing; await record('Permissões insuficientes'); return { ok: false, code: 'permissao' }; }
     }
-    // 1) Unified Login: accounts shared with the token (no Page involved).
-    const sharedIds = await discoverSharedInstagramIds(fetcher, { appId: app.appId, appSecret: app.appSecret, token })
-      .catch((error: unknown) => { diagnostics['ler_token_erro'] = error instanceof InstagramError ? error.detail : true; return [] as string[]; });
+    // 1) Unified Login: ask Meta what the token holds (no Page involved).
+    const info = await fetchTokenInfo(fetcher, { appId: app.appId, appSecret: app.appSecret, token })
+      .catch((error: unknown) => { diagnostics['ler_token_erro'] = error instanceof InstagramError ? error.detail : true; return null; });
+    if (info) diagnostics['token'] = { tipo: info.type, escopos: info.scopes.map(entry => ({ escopo: entry.scope, ids: entry.ids })) };
+    const sharedIds = info ? info.scopes.filter(entry => entry.scope.startsWith('instagram_')).flatMap(entry => entry.ids).filter((id, index, all) => all.indexOf(id) === index) : [];
     diagnostics['contas_compartilhadas'] = sharedIds.length;
-    if (sharedIds.length) {
-      const igUserId = sharedIds[0] as string;
-      const { username } = await verifyAccount(fetcher, token, igUserId);
-      await saveConnectedAccount(p.admin, p.userId, p.masterKey, { igUserId, username, pageId: null, token, issuedAt: now, expiresAt: null });
+    let found: { igUserId: string; username: string | null } | null = sharedIds[0] ? { igUserId: sharedIds[0], username: null } : null;
+    // 2) The portfolio the client chose lists its Instagram accounts.
+    if (!found && info) {
+      const businessIds = info.scopes.filter(entry => entry.scope === 'business_management').flatMap(entry => entry.ids);
+      const portfolioIds = (businessIds.length ? businessIds : info.scopes.flatMap(entry => entry.ids)).filter((id, index, all) => all.indexOf(id) === index);
+      if (portfolioIds.length) {
+        const portfolio = await discoverPortfolioAccounts(fetcher, token, portfolioIds);
+        diagnostics['portfolio_tentativas'] = portfolio.tries;
+        found = portfolio.accounts[0] ?? null;
+      }
+    }
+    if (found) {
+      const verified = await verifyAccount(fetcher, token, found.igUserId).catch((error: unknown) => { diagnostics['verificar_erro'] = error instanceof InstagramError ? error.detail : true; return { username: found?.username ?? null }; });
+      const username = verified.username ?? found.username;
+      await saveConnectedAccount(p.admin, p.userId, p.masterKey, { igUserId: found.igUserId, username, pageId: null, token, issuedAt: now, expiresAt: null });
       diagnostics['modo'] = 'unificado'; diagnostics['usuario'] = username;
     } else {
-      // 2) Older configurations: Pages that have a professional Instagram account linked.
+      // 3) Older configurations: Pages that have a professional Instagram account linked.
       const { accounts, pagesSeen } = await discoverAccounts(fetcher, token);
       diagnostics['paginas'] = pagesSeen; diagnostics['contas_instagram'] = accounts.length;
       const chosen = accounts[0];
