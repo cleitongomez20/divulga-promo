@@ -114,8 +114,9 @@ export type SharedAccount = { igUserId: string; username: string | null };
  * Unified Login (Meta docs, "Authentication and access tokens"): the token is a Business Integration System User token, so
  * "/me" is the system user, not the Instagram account. The accounts the client shared come from /me/assigned_instagram_accounts.
  */
-export async function discoverAssignedAccounts(fetcher: Fetcher, token: string): Promise<{ accounts: SharedAccount[]; tries: Detail[] }> {
-  const tries: Detail[] = [];
+export type Wait = (ms: number) => Promise<void>;
+const realWait: Wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+async function assignedOnce(fetcher: Fetcher, token: string, tries: Detail[], attempt: number): Promise<{ accounts: SharedAccount[]; failed: boolean }> {
   // Ask for the username too; if Meta refuses the field list, ask again with no fields so the ids still come back.
   for (const fields of ['id,username', null] as const) {
     try {
@@ -129,11 +130,25 @@ export async function discoverAssignedAccounts(fetcher: Fetcher, token: string):
         const id = text((item as Record<string, unknown>)['id']);
         if (id && !accounts.some(account => account.igUserId === id)) accounts.push({ igUserId: id, username: text((item as Record<string, unknown>)['username']) });
       }
-      tries.push({ step: 'contas_atribuidas', fields: fields ?? 'nenhum', encontradas: accounts.length, itens_recebidos: list.length, chaves: Object.keys(json) });
-      return { accounts, tries };
+      tries.push({ step: 'contas_atribuidas', tentativa: attempt, fields: fields ?? 'nenhum', encontradas: accounts.length, itens_recebidos: list.length, chaves: Object.keys(json) });
+      return { accounts, failed: false };
     } catch (error) {
-      tries.push(error instanceof InstagramError ? { ...error.detail, fields: fields ?? 'nenhum' } : { step: 'contas_atribuidas', fields: fields ?? 'nenhum' });
+      tries.push(error instanceof InstagramError ? { ...error.detail, tentativa: attempt, fields: fields ?? 'nenhum' } : { step: 'contas_atribuidas', tentativa: attempt, fields: fields ?? 'nenhum' });
     }
+  }
+  return { accounts: [], failed: true };
+}
+/**
+ * Unified Login (Meta docs, "Get started"): the token is a Business Integration System User token, so "/me" is the system
+ * user, not the Instagram account. The accounts the client shared come from /me/assigned_instagram_accounts. Right after
+ * the login the list can still be empty, so an empty answer (not an error) is asked again a few times.
+ */
+export async function discoverAssignedAccounts(fetcher: Fetcher, token: string, retry: { extraTries?: number; delayMs?: number; wait?: Wait } = {}): Promise<{ accounts: SharedAccount[]; tries: Detail[] }> {
+  const tries: Detail[] = []; const extra = retry.extraTries ?? 0;
+  for (let attempt = 1; attempt <= extra + 1; attempt++) {
+    const result = await assignedOnce(fetcher, token, tries, attempt);
+    if (result.accounts.length || result.failed || attempt > extra) return { accounts: result.accounts, tries };
+    await (retry.wait ?? realWait)(retry.delayMs ?? 2500);
   }
   return { accounts: [], tries };
 }
@@ -241,7 +256,7 @@ export async function checkAccount(admin: Admin, userId: string, masterKey: stri
 }
 
 /** Everything that happens when the user comes back from the login window. Each step leaves safe details in the history. */
-export async function completeInstagramLogin(p: { admin: Admin; userId: string; masterKey: string; code: string; redirectUri: string; fetcher?: Fetcher; now?: number }): Promise<{ ok: true } | { ok: false; code: InstagramErrorCode }> {
+export async function completeInstagramLogin(p: { admin: Admin; userId: string; masterKey: string; code: string; redirectUri: string; fetcher?: Fetcher; now?: number; wait?: Wait }): Promise<{ ok: true } | { ok: false; code: InstagramErrorCode }> {
   const fetcher = p.fetcher ?? fetch; const now = p.now ?? Date.now();
   const diagnostics: Record<string, unknown> = {};
   const record = (result: string) => p.admin.from('activity_log').insert({ user_id: p.userId, action: 'Conexão com o Instagram', result, details: diagnostics as Json });
@@ -260,7 +275,7 @@ export async function completeInstagramLogin(p: { admin: Admin; userId: string; 
     }
     const business = await fetchClientBusinessId(fetcher, token);
     diagnostics['empresa_cliente'] = business.clientBusinessId ?? business.detail;
-    const { accounts, tries } = await discoverAssignedAccounts(fetcher, token);
+    const { accounts, tries } = await discoverAssignedAccounts(fetcher, token, { extraTries: 3, delayMs: 2500, ...(p.wait ? { wait: p.wait } : {}) });
     diagnostics['tentativas'] = tries; diagnostics['contas_compartilhadas'] = accounts.length;
     const chosen = accounts[0];
     if (!chosen) {
