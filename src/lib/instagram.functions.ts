@@ -16,12 +16,14 @@ const masterKey = () => {
 async function admin() { return (await import('@/integrations/supabase/client.server')).supabaseAdmin; }
 const failure = async (error: unknown): Promise<ActionResult> => {
   const { InstagramError } = await import('./instagram.server');
-  return { status: 'error', message: error instanceof InstagramError ? instagramErrorMessage(error.code) : error instanceof Error && error.message ? error.message : 'Não foi possível concluir agora. Tente de novo.' };
+  return { status: 'error', message: error instanceof InstagramError ? `${instagramErrorMessage(error.code)}${error.code === 'salvar' ? ` (etapa: ${error.detail.step})` : ''}` : error instanceof Error && error.message ? error.message : 'Não foi possível concluir agora. Tente de novo.' };
 };
 /** Spacing between actions for one user, so the buttons cannot be hammered. */
 async function tooSoon(db: Awaited<ReturnType<typeof admin>>, userId: string) {
-  const { data } = await db.rpc('reserve_connector_slot', { p_scope: `instagram-edit:${userId}`, p_interval_ms: 3000 });
-  return data !== 0;
+  const { data, error } = await db.rpc('reserve_connector_slot', { p_scope: `instagram-edit:${userId}`, p_interval_ms: 3000 });
+  // Only a real "wait" answer (a positive number of milliseconds) blocks. If the spacing check itself fails, the action goes ahead.
+  if (error) return false;
+  return typeof data === 'number' && data > 0;
 }
 
 export const getInstagramStatus = createServerFn({ method: 'GET' }).middleware([requireSupabaseAuth]).handler(async ({ context }): Promise<InstagramStatus> => {
@@ -39,7 +41,7 @@ export const saveInstagramSecret = createServerFn({ method: 'POST' }).middleware
   .inputValidator(input => instagramSecretSchema.parse(input)).handler(async ({ context, data }): Promise<ActionResult> => {
     try {
       const db = await admin();
-      if (!(await tooSoon(db, context.userId))) return { status: 'error', message: 'Aguarde alguns segundos e tente de novo.' };
+      if (await tooSoon(db, context.userId)) return { status: 'error', message: 'Aguarde alguns segundos e tente de novo.' };
       const { saveAppCredentials } = await import('./instagram.server');
       await saveAppCredentials(db, context.userId, masterKey(), { appId: META_APP_ID, appSecret: data.appSecret, configId: META_CONFIG_ID });
       await db.from('activity_log').insert({ user_id: context.userId, action: 'App da Meta salvo', result: 'Chave secreta do app da Meta salva', details: {} });
@@ -61,7 +63,7 @@ export const startInstagramLogin = createServerFn({ method: 'POST' }).middleware
 export const checkInstagramConnection = createServerFn({ method: 'POST' }).middleware([requireSupabaseAuth]).handler(async ({ context }): Promise<ActionResult> => {
   try {
     const db = await admin();
-    if (!(await tooSoon(db, context.userId))) return { status: 'error', message: 'Aguarde alguns segundos e tente de novo.' };
+    if (await tooSoon(db, context.userId)) return { status: 'error', message: 'Aguarde alguns segundos e tente de novo.' };
     const { checkAccount, InstagramError } = await import('./instagram.server');
     try {
       const { username } = await checkAccount(db, context.userId, masterKey());
