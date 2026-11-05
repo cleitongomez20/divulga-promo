@@ -20,7 +20,17 @@ export const instagramSecretSchema = z.object({
   appSecret: instagramAppSchema.shape.appSecret,
 });
 
-export type InstagramErrorCode = 'negado' | 'estado' | 'app' | 'troca' | 'permissao' | 'sem_instagram' | 'perfil' | 'expirado' | 'salvar';
+export type InstagramErrorCode =
+  | 'negado'
+  | 'estado'
+  | 'app'
+  | 'troca'
+  | 'permissao'
+  | 'sem_instagram'
+  | 'multiplas_contas'
+  | 'perfil'
+  | 'expirado'
+  | 'salvar';
 const MESSAGES: Record<InstagramErrorCode, string> = {
   negado: 'Você cancelou a autorização. Se quiser, tente de novo.',
   estado: 'O pedido de conexão expirou ou não é válido. Clique em Conectar Instagram de novo.',
@@ -28,6 +38,7 @@ const MESSAGES: Record<InstagramErrorCode, string> = {
   troca: 'Não foi possível concluir a conexão. Confira o ID do app, o segredo, o ID da configuração e o endereço de retorno, e tente de novo.',
   permissao: 'A configuração de login não concedeu todas as permissões necessárias (instagram_basic e instagram_content_publish). Edite a configuração na Meta e conecte de novo.',
   sem_instagram: 'Nenhuma conta do Instagram profissional foi encontrada nesta autorização. Confirme que a conta é profissional (comercial ou criador de conteúdo) e, na tela da Meta, selecione o portfólio empresarial e a conta do Instagram que será compartilhada.',
+  multiplas_contas: 'Mais de uma conta Instagram foi encontrada neste portfólio. É necessário selecionar qual conta deseja conectar.',
   perfil: 'Não foi possível ler os dados da conta do Instagram agora. Tente de novo.',
   expirado: 'O acesso ao Instagram deixou de valer. Conecte de novo.',
   salvar: 'Não foi possível salvar a conexão. Tente de novo.',

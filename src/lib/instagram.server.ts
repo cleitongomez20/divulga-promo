@@ -150,6 +150,98 @@ export async function discoverAssignedAccounts(fetcher: Fetcher, token: string):
   }
   return { accounts: [], tries };
 }
+
+/**
+ * Busca contas Instagram diretamente no portfólio empresarial.
+ * Utilizada como alternativa quando o Login Unificado
+ * não retorna contas em /me/assigned_instagram_accounts.
+ */
+export async function discoverBusinessAccounts(
+  fetcher: Fetcher,
+  token: string,
+  businessId: string
+): Promise<{ accounts: SharedAccount[]; tries: Detail[] }> {
+  const tries: Detail[] = [];
+  const accounts: SharedAccount[] = [];
+
+  const edges = [
+    'owned_instagram_accounts',
+    'instagram_accounts',
+  ] as const;
+
+  for (const edge of edges) {
+    // Tenta primeiro com id e username.
+    // Se a Meta recusar os campos, tenta sem especificá-los.
+    for (const fields of ['id,username', null] as const) {
+      try {
+        const params: Record<string, string> = {
+          limit: '100',
+          access_token: token,
+        };
+
+        if (fields) {
+          params['fields'] = fields;
+        }
+
+        const json = await graphGet(
+          fetcher,
+          graphUrl(
+            `/${encodeURIComponent(businessId)}/${edge}`,
+            params
+          ),
+          'perfil',
+          edge
+        );
+
+        const list = Array.isArray(json['data'])
+          ? (json['data'] as unknown[])
+          : [];
+
+        const previousCount = accounts.length;
+
+        for (const item of list) {
+          if (!item || typeof item !== 'object') continue;
+
+          const account = item as Record<string, unknown>;
+          const id = text(account['id']);
+
+          if (
+            id &&
+            !accounts.some(existing => existing.igUserId === id)
+          ) {
+            accounts.push({
+              igUserId: id,
+              username: text(account['username']),
+            });
+          }
+        }
+
+        tries.push({
+          step: edge,
+          fields: fields ?? 'nenhum',
+          recebidas: list.length,
+          encontradas: accounts.length - previousCount,
+        });
+
+        // Encontrou contas: não precisa consultar a próxima aresta.
+        break;
+
+      } catch (error) {
+        tries.push(
+          error instanceof InstagramError
+            ? { ...error.detail, step: edge, fields: fields ?? 'nenhum' }
+            : { step: edge, fields: fields ?? 'nenhum' }
+        );
+      }
+    }
+
+    if (accounts.length > 0) {
+      return { accounts, tries };
+    }
+  }
+
+  return { accounts, tries };
+}
 /** Asks the Instagram account itself, which proves the saved access really works. */
 export async function verifyAccount(fetcher: Fetcher, token: string, igUserId: string) {
   const json = await graphGet(fetcher, graphUrl(`/${encodeURIComponent(igUserId)}`, { fields: 'id,username', access_token: token }), 'perfil', 'verificar_conta');
@@ -284,9 +376,67 @@ if (businessInfo) {
       const missing = REQUIRED_PERMISSIONS.filter(permission => !granted.includes(permission));
       if (missing.length) { diagnostics['permissoes_faltando'] = missing; await record('Permissões insuficientes'); return { ok: false, code: 'permissao' }; }
     }
-    const { accounts, tries } = await discoverAssignedAccounts(fetcher, token);
-    diagnostics['tentativas'] = tries; diagnostics['contas_compartilhadas'] = accounts.length;
-    const chosen = accounts[0];
+    
+const assignedResult = await discoverAssignedAccounts(fetcher, token);
+
+let accounts = assignedResult.accounts;
+const tries: Detail[] = [...assignedResult.tries];
+
+// Obtém o portfólio empresarial identificado durante o Login Unificado.
+const businessId = text(diagnostics['empresa_cliente']);
+
+// Se o Login Unificado não encontrou contas, tenta consultar o portfólio.
+if (accounts.length === 0 && businessId) {
+  const businessResult = await discoverBusinessAccounts(
+    fetcher,
+    token,
+    businessId
+  );
+
+  accounts = businessResult.accounts;
+  tries.push(...businessResult.tries);
+
+  diagnostics['fallback_portfolio'] = {
+    empresa: businessId,
+    contas_encontradas: businessResult.accounts.length,
+  };
+}
+
+diagnostics['tentativas'] = tries;
+diagnostics['contas_compartilhadas'] = accounts.length;
+
+// Não conectar automaticamente uma conta arbitrária quando houver várias.
+if (accounts.length > 1) {
+  diagnostics['contas_para_selecao'] = accounts.map(account => ({
+    id: account.igUserId,
+    username: account.username,
+  }));
+
+  await record('Mais de uma conta encontrada; seleção necessária');
+
+  return { ok: false, code: 'multiplas_contas' };
+}
+
+const chosen = accounts[0];
+
+if (!chosen) {
+  const failed =
+    tries.length > 0 &&
+    tries.every(attempt =>
+      attempt.status !== undefined || attempt.network
+    );
+
+  await record(
+    failed
+      ? 'Não foi possível listar as contas do Instagram'
+      : 'Nenhuma conta do Instagram encontrada'
+  );
+
+  return {
+    ok: false,
+    code: failed ? 'perfil' : 'sem_instagram',
+  };
+}
     if (!chosen) {
       const failed = tries.every(attempt => attempt.status !== undefined || attempt.network);
       await record(failed ? 'Não foi possível listar as contas do Instagram' : 'Nenhuma conta do Instagram encontrada');
