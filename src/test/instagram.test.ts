@@ -39,7 +39,7 @@ function fakeAdmin() {
   return { admin: { from } as never, tables };
 }
 
-const APP = { appId: '123456789012345', appSecret: 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6', configId: '1592981445966230' };
+const APP = { appId: '123456789012345', appSecret: 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6', configId: META_CONFIG_ID };
 
 describe('app data and messages', () => {
   it('accepts numeric ids and an alphanumeric secret only', () => {
@@ -67,7 +67,7 @@ describe('fixed Meta app values', () => {
     expect(instagramSecretSchema.safeParse({ appSecret: 'curto' }).success).toBe(false);
     const url = new URL(buildAuthorizeUrl({ appId: META_APP_ID, configId: META_CONFIG_ID, redirectUri: CALLBACK_URL, state: 'S' }));
     expect(url.searchParams.get('client_id')).toBe('1621449662157910');
-    expect(url.searchParams.get('config_id')).toBe('1592981445966230');
+    expect(url.searchParams.get('config_id')).toBe(META_CONFIG_ID);
     expect(url.searchParams.get('redirect_uri')).toBe(CALLBACK_URL);
   });
 });
