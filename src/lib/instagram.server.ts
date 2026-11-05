@@ -101,6 +101,27 @@ export async function fetchGrantedPermissions(fetcher: Fetcher, token: string): 
   return data.flatMap(item => (item && typeof item === 'object' && (item as Record<string, unknown>)['status'] === 'granted' ? [String((item as Record<string, unknown>)['permission'])] : []));
 }
 
+/** Identifica o usuário de integração e o portfólio empresarial associado ao token. */
+export async function fetchClientBusinessInfo(
+  fetcher: Fetcher,
+  token: string
+) {
+  const json = await graphGet(
+    fetcher,
+    graphUrl('/me', {
+      fields: 'id,client_business_id',
+      access_token: token,
+    }),
+    'perfil',
+    'identificar_negocio'
+  );
+
+  return {
+    systemUserId: text(json['id']),
+    clientBusinessId: text(json['client_business_id']),
+  };
+}
+
 export type SharedAccount = { igUserId: string; username: string | null };
 /**
  * Unified Login (Meta docs, "Authentication and access tokens"): the token is a Business Integration System User token, so
@@ -243,6 +264,19 @@ export async function completeInstagramLogin(p: { admin: Admin; userId: string; 
     // The login hands over a Business Integration System User token. It is used as received (no long-lived exchange).
     const { token } = await exchangeCode(fetcher, { appId: app.appId, appSecret: app.appSecret, redirectUri: p.redirectUri, code: p.code });
     diagnostics['codigo_trocado'] = true;
+    
+const businessInfo = await fetchClientBusinessInfo(fetcher, token)
+  .catch((error: unknown) => {
+    diagnostics['identificar_negocio_erro'] =
+      error instanceof InstagramError ? error.detail : true;
+
+    return null;
+  });
+
+if (businessInfo) {
+  diagnostics['usuario_sistema_meta'] = businessInfo.systemUserId;
+  diagnostics['empresa_cliente'] = businessInfo.clientBusinessId;
+}
     // A failure to list permissions is not fatal: the account search below shows whether the access works.
     const granted = await fetchGrantedPermissions(fetcher, token).catch((error: unknown) => { diagnostics['permissoes_erro'] = error instanceof InstagramError ? error.detail : true; return null; });
     if (granted) {
