@@ -50,6 +50,7 @@ export function buildAuthorizeUrl(p: { appId: string; configId: string; redirect
   url.searchParams.set('response_type', 'code');
   url.searchParams.set('override_default_response_type', 'true');
   url.searchParams.set('state', p.state);
+  url.searchParams.set('display', 'popup');
   url.searchParams.set('prompt', 'login');
   return url.toString();
 }
