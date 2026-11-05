@@ -108,7 +108,7 @@ describe('signed state of the login', () => {
     expect(url.searchParams.get('response_type')).toBe('code');
     expect(url.searchParams.get('override_default_response_type')).toBe('true');
     expect(url.searchParams.get('state')).toBe('abc.def');
-    expect(url.searchParams.get('display')).toBe('popup');
+    expect(url.searchParams.get('display')).toBe(false);
     expect(url.searchParams.get('prompt')).toBe('login');
     expect(url.searchParams.get('redirect_uri')).toBe('https://app.exemplo/api/public/instagram-callback');
     expect(url.searchParams.has('scope')).toBe(false);
