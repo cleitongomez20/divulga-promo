@@ -20,25 +20,21 @@ export const instagramSecretSchema = z.object({
   appSecret: instagramAppSchema.shape.appSecret,
 });
 
-export type InstagramErrorCode =
-  | 'negado'
-  | 'estado'
-  | 'app'
-  | 'troca'
-  | 'permissao'
-  | 'sem_instagram'
-  | 'multiplas_contas'
-  | 'perfil'
-  | 'expirado'
-  | 'salvar';
+// The company's own account: token of a portfolio system user + the account id (17 digits starting with 17841, not the portfolio asset id).
+export const ownAccountSchema = z.object({
+  accessToken: z.string().trim().min(20, 'Cole o token completo do usuário do sistema.').max(2000, 'O token parece grande demais. Confira se colou só o token.').regex(/^\S+$/, 'O token não pode ter espaços ou quebras de linha.'),
+  igUserId: z.string().trim().regex(/^17841\d{10,14}$/, 'O ID da conta do Instagram tem só números e começa com 17841 (é o ID que aparece no Meta Business Suite, não o do portfólio).'),
+});
+
+export type InstagramErrorCode = 'conta' | 'negado' | 'estado' | 'app' | 'troca' | 'permissao' | 'sem_instagram' | 'perfil' | 'expirado' | 'salvar';
 const MESSAGES: Record<InstagramErrorCode, string> = {
+  conta: 'Não foi possível ler essa conta com esse token. Confira se o token foi gerado para o app Divulga Promo, com a conta do Instagram atribuída ao usuário do sistema, e se o ID é o da conta (começa com 17841).',
   negado: 'Você cancelou a autorização. Se quiser, tente de novo.',
   estado: 'O pedido de conexão expirou ou não é válido. Clique em Conectar Instagram de novo.',
   app: 'Salve primeiro a chave secreta do app da Meta.',
   troca: 'Não foi possível concluir a conexão. Confira o ID do app, o segredo, o ID da configuração e o endereço de retorno, e tente de novo.',
   permissao: 'A configuração de login não concedeu todas as permissões necessárias (instagram_basic e instagram_content_publish). Edite a configuração na Meta e conecte de novo.',
   sem_instagram: 'Nenhuma conta do Instagram profissional foi encontrada nesta autorização. Confirme que a conta é profissional (comercial ou criador de conteúdo) e, na tela da Meta, selecione o portfólio empresarial e a conta do Instagram que será compartilhada.',
-  multiplas_contas: 'Mais de uma conta Instagram foi encontrada neste portfólio. É necessário selecionar qual conta deseja conectar.',
   perfil: 'Não foi possível ler os dados da conta do Instagram agora. Tente de novo.',
   expirado: 'O acesso ao Instagram deixou de valer. Conecte de novo.',
   salvar: 'Não foi possível salvar a conexão. Tente de novo.',

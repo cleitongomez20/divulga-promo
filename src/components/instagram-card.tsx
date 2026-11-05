@@ -58,8 +58,8 @@ export function InstagramCard() {
 
   const account = status?.account ?? null;
   const secretSaved = Boolean(status?.appConfigured);
-  const showSecretForm = Boolean(status) && (!secretSaved || editing);
   const needsConnect = !account || account.expired;
+  const showSecretForm = Boolean(status) && needsConnect && (!secretSaved || editing);
   const label = account ? (account.expired ? 'Precisa conectar de novo' : 'Conectado') : 'Pronto para conectar';
 
   return <section aria-labelledby="instagram-title" className="rounded-lg border bg-card p-5 sm:p-7">
@@ -93,8 +93,8 @@ export function InstagramCard() {
     {status && <div className="mt-6 flex flex-wrap gap-2">
       {account && !account.expired && <Button variant="outline" className="min-h-11" onClick={() => void act('check', () => check())} disabled={busy !== ''}>{busy === 'check' ? <LoaderCircle className="animate-spin" /> : <Stethoscope />}Testar conexão</Button>}
       {account && <Button variant="outline" className="min-h-11" onClick={() => void act('disconnect', () => disconnect())} disabled={busy !== ''}>{busy === 'disconnect' ? <LoaderCircle className="animate-spin" /> : <Trash2 />}Desconectar</Button>}
-      {secretSaved && !editing && <Button variant="ghost" className="min-h-11" onClick={() => setEditing(true)} disabled={busy !== ''}>Trocar chave secreta</Button>}
-      {secretSaved && <Button variant="ghost" className="min-h-11" onClick={() => void act('removeApp', () => removeApp())} disabled={busy !== ''}>Remover chave</Button>}
+      {secretSaved && needsConnect && !editing && <Button variant="ghost" className="min-h-11" onClick={() => setEditing(true)} disabled={busy !== ''}>Trocar chave secreta</Button>}
+      {secretSaved && needsConnect && <Button variant="ghost" className="min-h-11" onClick={() => void act('removeApp', () => removeApp())} disabled={busy !== ''}>Remover chave</Button>}
     </div>}
     {notice && <p role="status" className="mt-5 text-sm font-medium">{notice}</p>}
   </section>;

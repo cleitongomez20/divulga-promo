@@ -1,6 +1,6 @@
 import { createServerFn } from '@tanstack/react-start';
 import { requireSupabaseAuth } from '@/integrations/supabase/auth-middleware';
-import { CALLBACK_URL, META_APP_ID, META_CONFIG_ID, instagramSecretSchema, instagramErrorMessage } from './instagram';
+import { CALLBACK_URL, META_APP_ID, META_CONFIG_ID, instagramSecretSchema, ownAccountSchema, instagramErrorMessage } from './instagram';
 
 export type InstagramStatus = {
   appConfigured: boolean; redirectUri: string;
@@ -46,6 +46,19 @@ export const saveInstagramSecret = createServerFn({ method: 'POST' }).middleware
       await saveAppCredentials(db, context.userId, masterKey(), { appId: META_APP_ID, appSecret: data.appSecret, configId: META_CONFIG_ID });
       await db.from('activity_log').insert({ user_id: context.userId, action: 'App da Meta salvo', result: 'Chave secreta do app da Meta salva', details: {} });
       return { status: 'ok', message: 'Chave secreta salva.' };
+    } catch (error) { return failure(error); }
+  });
+
+/** The company's own Instagram: a portfolio system user token + the account id, checked by reading the account with that token. */
+export const connectOwnInstagram = createServerFn({ method: 'POST' }).middleware([requireSupabaseAuth])
+  .inputValidator(input => ownAccountSchema.parse(input)).handler(async ({ context, data }): Promise<ActionResult> => {
+    try {
+      const db = await admin();
+      if (await tooSoon(db, context.userId)) return { status: 'error', message: 'Aguarde alguns segundos e tente de novo.' };
+      const { connectOwnAccount } = await import('./instagram.server');
+      const result = await connectOwnAccount({ admin: db, userId: context.userId, masterKey: masterKey(), accessToken: data.accessToken, igUserId: data.igUserId });
+      if (!result.ok) return { status: 'error', message: instagramErrorMessage(result.code) };
+      return { status: 'ok', message: result.username ? `Conta @${result.username} conectada.` : 'Conta conectada.' };
     } catch (error) { return failure(error); }
   });
 
