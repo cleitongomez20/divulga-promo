@@ -6,9 +6,6 @@ export const META_APP_ID = '1621449662157910';
 export const META_CONFIG_ID = '1592981445966230';
 export const PUBLIC_ORIGIN = 'https://divulga-promo.lovable.app';
 export const CALLBACK_URL = `${PUBLIC_ORIGIN}${CALLBACK_PATH}`;
-// TEMPORARY: Instagram account ids (the 17-digit "17841..." id shown in Meta Business Suite) tried when Meta lists no assigned account.
-// A token can only read the account if the client really shared it, so this never gives access to anything not granted.
-export const MANUAL_INSTAGRAM_IDS: readonly string[] = ['17841401258866570'];
 export const GRAPH_VERSION = 'v27.0';
 // What the login configuration on the Meta side has to grant for publishing to work.
 export const REQUIRED_PERMISSIONS = ['instagram_basic', 'instagram_content_publish'] as const;
