@@ -293,7 +293,8 @@ describe('the company own account (portfolio system user token)', () => {
   });
   const lastLog = (db: ReturnType<typeof fakeAdmin>) => db.tables['activity_log']?.at(-1) as { result: string; details: Record<string, unknown> };
 
-  it('accepts the 17841 account id and refuses the portfolio asset id or a broken token', () => {
+  it('accepts the 17841 account id (or none) and refuses the portfolio asset id or a broken token', () => {
+    expect(ownAccountSchema.parse({ accessToken: OWN.accessToken })).toEqual({ accessToken: OWN.accessToken, igUserId: '' });
     expect(ownAccountSchema.safeParse({ accessToken: OWN.accessToken, igUserId: OWN.igUserId }).success).toBe(true);
     expect(ownAccountSchema.safeParse({ accessToken: OWN.accessToken, igUserId: '111892348217875' }).success).toBe(false);
     expect(ownAccountSchema.safeParse({ accessToken: 'curto', igUserId: OWN.igUserId }).success).toBe(false);
@@ -306,6 +307,26 @@ describe('the company own account (portfolio system user token)', () => {
     expect(await getPublishingToken(db.admin, USER, KEY)).toEqual({ token: OWN.accessToken, igUserId: '17841401258866570', pageId: null });
     expect(JSON.stringify(db.tables)).not.toContain(OWN.accessToken);
     expect(lastLog(db)).toMatchObject({ result: 'Conta própria conectada', details: { modo: 'usuario_do_sistema', usuario: '_cleitosantos_' } });
+  });
+  it('finds the account id by itself from what the token can list, and keeps the token sealed', async () => {
+    const db = fakeAdmin();
+    const fetcher = asFetch(url => {
+      if (url.includes('/me/permissions')) return json({ data: [{ permission: 'instagram_basic', status: 'granted' }, { permission: 'instagram_content_publish', status: 'granted' }] });
+      if (url.includes('/me/assigned_instagram_accounts')) return json({ data: [{ id: 17841401258866570, username: '_cleitosantos_' }] });
+      if (url.includes('/17841401258866570?')) return json({ id: '17841401258866570', username: '_cleitosantos_' });
+      return json({}, 404);
+    });
+    expect(await connectOwnAccount({ admin: db.admin, userId: USER, masterKey: KEY, accessToken: OWN.accessToken, fetcher })).toEqual({ ok: true, username: '_cleitosantos_' });
+    expect(await loadAccount(db.admin, USER)).toMatchObject({ igUserId: '17841401258866570', pageId: null });
+    expect(JSON.stringify(db.tables)).not.toContain(OWN.accessToken);
+    expect(lastLog(db).details).toMatchObject({ modo: 'usuario_do_sistema', contas_compartilhadas: 1, conta: '17841401258866570' });
+  });
+  it('says the token lists no account (and saves nothing) when nothing is found', async () => {
+    const db = fakeAdmin();
+    const fetcher = asFetch(url => url.includes('/me/permissions') ? json({ data: [{ permission: 'instagram_basic', status: 'granted' }, { permission: 'instagram_content_publish', status: 'granted' }] }) : url.includes('/me/assigned_instagram_accounts') ? json({ data: [] }) : json({ metadata: { connections: {} } }));
+    expect(await connectOwnAccount({ admin: db.admin, userId: USER, masterKey: KEY, accessToken: OWN.accessToken, fetcher })).toEqual({ ok: false, code: 'token_sem_conta' });
+    expect(await loadAccount(db.admin, USER)).toBeNull();
+    expect(lastLog(db)).toMatchObject({ result: 'Nenhuma conta do Instagram encontrada', details: { contas_compartilhadas: 0 } });
   });
   it('does not save when Meta refuses to show the account to that token', async () => {
     const db = fakeAdmin();

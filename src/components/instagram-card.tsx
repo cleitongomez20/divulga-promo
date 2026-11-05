@@ -1,21 +1,26 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useServerFn } from '@tanstack/react-start';
-import { Instagram, LoaderCircle, Trash2, Save, Stethoscope, KeyRound } from 'lucide-react';
+import { Instagram, LoaderCircle, Trash2, Save, Stethoscope, KeyRound, Building2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { PasswordInput } from '@/components/password-input';
-import { getInstagramStatus, saveInstagramSecret, startInstagramLogin, checkInstagramConnection, disconnectInstagram, removeInstagramApp } from '@/lib/instagram.functions';
-import { instagramSecretSchema, instagramErrorMessage } from '@/lib/instagram';
+import { getInstagramStatus, saveInstagramSecret, connectOwnInstagram, startInstagramLogin, checkInstagramConnection, disconnectInstagram, removeInstagramApp } from '@/lib/instagram.functions';
+import { instagramSecretSchema, ownAccountSchema, instagramErrorMessage } from '@/lib/instagram';
+
+const fieldClass = 'h-11 w-full rounded-md border bg-background px-3 text-base';
 
 export function InstagramCard() {
   const queryClient = useQueryClient();
   const { data: status, isLoading } = useQuery({ queryKey: ['instagram'], queryFn: () => getInstagramStatus(), staleTime: 0 });
   const saveSecret = useServerFn(saveInstagramSecret);
+  const connectOwn = useServerFn(connectOwnInstagram);
   const start = useServerFn(startInstagramLogin);
   const check = useServerFn(checkInstagramConnection);
   const disconnect = useServerFn(disconnectInstagram);
   const removeApp = useServerFn(removeInstagramApp);
   const [appSecret, setAppSecret] = useState('');
+  const [ownToken, setOwnToken] = useState('');
+  const [ownId, setOwnId] = useState('');
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState('');
   const [notice, setNotice] = useState('');
@@ -45,6 +50,12 @@ export function InstagramCard() {
     const parsed = instagramSecretSchema.safeParse({ appSecret });
     if (!parsed.success) { setNotice(parsed.error.issues[0]?.message ?? 'Confira a chave.'); return; }
     if (await act('save', () => saveSecret({ data: parsed.data }))) { setAppSecret(''); setEditing(false); }
+  }
+  async function submitOwn(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const parsed = ownAccountSchema.safeParse({ accessToken: ownToken, igUserId: ownId });
+    if (!parsed.success) { setNotice(parsed.error.issues[0]?.message ?? 'Confira os dados.'); return; }
+    if (await act('own', () => connectOwn({ data: parsed.data }))) { setOwnToken(''); setOwnId(''); }
   }
   async function connect() {
     setBusy('connect'); setNotice('');
@@ -78,6 +89,15 @@ export function InstagramCard() {
       <Button size="lg" className="min-h-12 w-full text-base font-semibold sm:w-auto" onClick={() => void connect()} disabled={busy !== ''}>
         {busy === 'connect' ? <LoaderCircle className="animate-spin" /> : <Instagram />}{account ? 'Conectar de novo com Instagram ou Facebook' : 'Conectar com Instagram ou Facebook'}
       </Button>
+      <details className="rounded-md border p-4 text-sm">
+        <summary className="flex cursor-pointer items-center gap-2 font-medium"><Building2 className="size-4" />Conta própria do portfólio (token do usuário do sistema)</summary>
+        <form onSubmit={e => void submitOwn(e)} className="mt-3 space-y-3">
+          <p className="text-muted-foreground">Para a conta da própria empresa, dona do portfólio, que não consegue usar o login acima. Gere o token em <strong>Configurações do Business Suite &gt; Usuários &gt; Usuários do sistema</strong> (com o app e a conta do Instagram atribuídos, e as permissões <strong>instagram_basic</strong> e <strong>instagram_content_publish</strong>). O app acha a conta sozinho e guarda o token criptografado.</p>
+          <label className="grid gap-1 font-medium">Token do usuário do sistema<PasswordInput value={ownToken} onChange={e => setOwnToken(e.target.value)} autoComplete="off" placeholder="Cole o token completo" /></label>
+          <label className="grid gap-1 font-medium">ID da conta do Instagram (opcional)<input value={ownId} onChange={e => setOwnId(e.target.value)} inputMode="numeric" autoComplete="off" placeholder="Só se a busca automática não achar (17841...)" className={fieldClass} /></label>
+          <Button type="submit" disabled={busy !== ''} className="min-h-11">{busy === 'own' ? <LoaderCircle className="animate-spin" /> : <Save />}Conectar conta própria</Button>
+        </form>
+      </details>
     </div>}
 
     {showSecretForm && <form onSubmit={e => void submit(e)} className="mt-6 space-y-3 rounded-md border p-4">

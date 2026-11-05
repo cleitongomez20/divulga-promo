@@ -20,14 +20,16 @@ export const instagramSecretSchema = z.object({
   appSecret: instagramAppSchema.shape.appSecret,
 });
 
-// The company's own account: token of a portfolio system user + the account id (17 digits starting with 17841, not the portfolio asset id).
+// The company's own account: token of a portfolio system user. The account id is found by the app; typing it (17 digits starting
+// with 17841, not the portfolio asset id) is optional and only a fallback.
 export const ownAccountSchema = z.object({
   accessToken: z.string().trim().min(20, 'Cole o token completo do usuário do sistema.').max(2000, 'O token parece grande demais. Confira se colou só o token.').regex(/^\S+$/, 'O token não pode ter espaços ou quebras de linha.'),
-  igUserId: z.string().trim().regex(/^17841\d{10,14}$/, 'O ID da conta do Instagram tem só números e começa com 17841 (é o ID que aparece no Meta Business Suite, não o do portfólio).'),
+  igUserId: z.string().trim().regex(/^(17841\d{10,14})?$/, 'O ID da conta do Instagram tem só números e começa com 17841 (é o ID que aparece no Meta Business Suite, não o do portfólio).').default(''),
 });
 
-export type InstagramErrorCode = 'conta' | 'negado' | 'estado' | 'app' | 'troca' | 'permissao' | 'sem_instagram' | 'perfil' | 'expirado' | 'salvar';
+export type InstagramErrorCode = 'token_sem_conta' | 'conta' | 'negado' | 'estado' | 'app' | 'troca' | 'permissao' | 'sem_instagram' | 'perfil' | 'expirado' | 'salvar';
 const MESSAGES: Record<InstagramErrorCode, string> = {
+  token_sem_conta: 'Esse token não listou nenhuma conta do Instagram. Confira se a conta foi atribuída ao usuário do sistema junto com o app Divulga Promo, ou informe o ID da conta (começa com 17841) no campo opcional.',
   conta: 'Não foi possível ler essa conta com esse token. Confira se o token foi gerado para o app Divulga Promo, com a conta do Instagram atribuída ao usuário do sistema, e se o ID é o da conta (começa com 17841).',
   negado: 'Você cancelou a autorização. Se quiser, tente de novo.',
   estado: 'O pedido de conexão expirou ou não é válido. Clique em Conectar Instagram de novo.',

@@ -322,30 +322,44 @@ export async function completeInstagramLogin(p: { admin: Admin; userId: string; 
 }
 
 /**
- * The company's own Instagram: a token of a Business Integration System User generated in the portfolio's settings, plus the
- * account id (the "17841..." number). No login round trip and no app secret. The token is proven by reading the account with it.
+ * The company's own Instagram: a token of a Business Integration System User generated in the portfolio's settings. No login
+ * round trip and no app secret. The app finds the account id itself from what the token can list; typing the id is optional.
  */
-export async function connectOwnAccount(p: { admin: Admin; userId: string; masterKey: string; accessToken: string; igUserId: string; fetcher?: Fetcher; now?: number }): Promise<{ ok: true; username: string | null } | { ok: false; code: InstagramErrorCode }> {
+export async function connectOwnAccount(p: { admin: Admin; userId: string; masterKey: string; accessToken: string; igUserId?: string; fetcher?: Fetcher; now?: number }): Promise<{ ok: true; username: string | null } | { ok: false; code: InstagramErrorCode }> {
   const fetcher = p.fetcher ?? fetch; const now = p.now ?? Date.now();
-  const diagnostics: Record<string, unknown> = { modo: 'usuario_do_sistema', conta: p.igUserId };
+  const diagnostics: Record<string, unknown> = { modo: 'usuario_do_sistema' };
   const record = (result: string) => p.admin.from('activity_log').insert({ user_id: p.userId, action: 'Conexão com o Instagram', result, details: diagnostics as Json });
   try {
-    // Reading the account proves the token works and that the account was given to it.
-    const { username } = await verifyAccount(fetcher, p.accessToken, p.igUserId).catch((error: unknown) => {
-      if (error instanceof InstagramError) { diagnostics['falha'] = error.detail; throw new InstagramError('conta', error.detail); }
-      throw error;
-    });
-    // A failure to list permissions is not fatal: the account read above already proved the access.
+    // A failure to list permissions is not fatal: reading the account below already proves the access.
     const granted = await fetchGrantedPermissions(fetcher, p.accessToken).catch((error: unknown) => { diagnostics['permissoes_erro'] = error instanceof InstagramError ? error.detail : true; return null; });
     if (granted) {
       diagnostics['permissoes'] = granted;
       const missing = REQUIRED_PERMISSIONS.filter(permission => !granted.includes(permission));
       if (missing.length) { diagnostics['permissoes_faltando'] = missing; await record('Permissões insuficientes'); return { ok: false, code: 'permissao' }; }
     }
-    await saveConnectedAccount(p.admin, p.userId, p.masterKey, { igUserId: p.igUserId, username, pageId: null, token: p.accessToken, issuedAt: now, expiresAt: null });
-    diagnostics['usuario'] = username;
+    let chosen: SharedAccount | null = p.igUserId ? { igUserId: p.igUserId, username: null } : null;
+    if (!chosen) {
+      // The token lists the accounts given to it: Meta's documented list first, then whatever Instagram connections it offers.
+      const documented = await discoverAssignedAccounts(fetcher, p.accessToken);
+      const tries = [...documented.tries]; let accounts = documented.accounts;
+      if (!accounts.length) {
+        const found = await discoverByIntrospection(fetcher, p.accessToken, null);
+        tries.push(...found.tries); accounts = found.accounts; diagnostics['conexoes_do_token'] = found.connections;
+        if (found.via) diagnostics['achada_por'] = found.via;
+      }
+      diagnostics['tentativas'] = tries; diagnostics['contas_compartilhadas'] = accounts.length;
+      chosen = accounts[0] ?? null;
+      if (!chosen) { await record('Nenhuma conta do Instagram encontrada'); return { ok: false, code: 'token_sem_conta' }; }
+    }
+    // Reading the account proves the token works and that the account was given to it.
+    const { username } = await verifyAccount(fetcher, p.accessToken, chosen.igUserId).catch((error: unknown) => {
+      if (error instanceof InstagramError) { diagnostics['falha'] = error.detail; throw new InstagramError('conta', error.detail); }
+      throw error;
+    });
+    await saveConnectedAccount(p.admin, p.userId, p.masterKey, { igUserId: chosen.igUserId, username: username ?? chosen.username, pageId: null, token: p.accessToken, issuedAt: now, expiresAt: null });
+    diagnostics['conta'] = chosen.igUserId; diagnostics['usuario'] = username ?? chosen.username;
     await record('Conta própria conectada');
-    return { ok: true, username };
+    return { ok: true, username: username ?? chosen.username };
   } catch (error) {
     const code = error instanceof InstagramError ? error.code : 'salvar';
     if (error instanceof InstagramError && !diagnostics['falha']) diagnostics['falha'] = error.detail;
