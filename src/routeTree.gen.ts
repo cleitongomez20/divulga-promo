@@ -19,6 +19,7 @@ import { Route as AuthenticatedConfiguracoesRouteImport } from './routes/_authen
 import { Route as AuthenticatedHistoricoRouteImport } from './routes/_authenticated/historico'
 import { Route as AuthenticatedPainelRouteImport } from './routes/_authenticated/painel'
 import { Route as AuthenticatedProdutosRouteImport } from './routes/_authenticated/produtos'
+import { Route as AuthenticatedPublicacoesRouteImport } from './routes/_authenticated/publicacoes'
 import { Route as ApiPublicInstagramCallbackRouteImport } from './routes/api/public/instagram-callback'
 import { Route as ApiPublicShopeeSyncRouteImport } from './routes/api/public/shopee-sync'
 
@@ -72,6 +73,12 @@ const AuthenticatedProdutosRoute = AuthenticatedProdutosRouteImport.update({
   path: '/produtos',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const AuthenticatedPublicacoesRoute =
+  AuthenticatedPublicacoesRouteImport.update({
+    id: '/publicacoes',
+    path: '/publicacoes',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
 const ApiPublicInstagramCallbackRoute =
   ApiPublicInstagramCallbackRouteImport.update({
     id: '/api/public/instagram-callback',
@@ -94,6 +101,7 @@ export interface FileRoutesByFullPath {
   '/historico': typeof AuthenticatedHistoricoRoute
   '/painel': typeof AuthenticatedPainelRoute
   '/produtos': typeof AuthenticatedProdutosRoute
+  '/publicacoes': typeof AuthenticatedPublicacoesRoute
   '/api/public/instagram-callback': typeof ApiPublicInstagramCallbackRoute
   '/api/public/shopee-sync': typeof ApiPublicShopeeSyncRoute
 }
@@ -107,6 +115,7 @@ export interface FileRoutesByTo {
   '/historico': typeof AuthenticatedHistoricoRoute
   '/painel': typeof AuthenticatedPainelRoute
   '/produtos': typeof AuthenticatedProdutosRoute
+  '/publicacoes': typeof AuthenticatedPublicacoesRoute
   '/api/public/instagram-callback': typeof ApiPublicInstagramCallbackRoute
   '/api/public/shopee-sync': typeof ApiPublicShopeeSyncRoute
 }
@@ -122,6 +131,7 @@ export interface FileRoutesById {
   '/_authenticated/historico': typeof AuthenticatedHistoricoRoute
   '/_authenticated/painel': typeof AuthenticatedPainelRoute
   '/_authenticated/produtos': typeof AuthenticatedProdutosRoute
+  '/_authenticated/publicacoes': typeof AuthenticatedPublicacoesRoute
   '/api/public/instagram-callback': typeof ApiPublicInstagramCallbackRoute
   '/api/public/shopee-sync': typeof ApiPublicShopeeSyncRoute
 }
@@ -137,6 +147,7 @@ export interface FileRouteTypes {
     | '/historico'
     | '/painel'
     | '/produtos'
+    | '/publicacoes'
     | '/api/public/instagram-callback'
     | '/api/public/shopee-sync'
   fileRoutesByTo: FileRoutesByTo
@@ -150,6 +161,7 @@ export interface FileRouteTypes {
     | '/historico'
     | '/painel'
     | '/produtos'
+    | '/publicacoes'
     | '/api/public/instagram-callback'
     | '/api/public/shopee-sync'
   id:
@@ -164,6 +176,7 @@ export interface FileRouteTypes {
     | '/_authenticated/historico'
     | '/_authenticated/painel'
     | '/_authenticated/produtos'
+    | '/_authenticated/publicacoes'
     | '/api/public/instagram-callback'
     | '/api/public/shopee-sync'
   fileRoutesById: FileRoutesById
@@ -250,6 +263,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedProdutosRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/publicacoes': {
+      id: '/_authenticated/publicacoes'
+      path: '/publicacoes'
+      fullPath: '/publicacoes'
+      preLoaderRoute: typeof AuthenticatedPublicacoesRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/api/public/instagram-callback': {
       id: '/api/public/instagram-callback'
       path: '/api/public/instagram-callback'
@@ -273,6 +293,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedHistoricoRoute: typeof AuthenticatedHistoricoRoute
   AuthenticatedPainelRoute: typeof AuthenticatedPainelRoute
   AuthenticatedProdutosRoute: typeof AuthenticatedProdutosRoute
+  AuthenticatedPublicacoesRoute: typeof AuthenticatedPublicacoesRoute
 }
 
 const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
@@ -281,6 +302,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedHistoricoRoute: AuthenticatedHistoricoRoute,
   AuthenticatedPainelRoute: AuthenticatedPainelRoute,
   AuthenticatedProdutosRoute: AuthenticatedProdutosRoute,
+  AuthenticatedPublicacoesRoute: AuthenticatedPublicacoesRoute,
 }
 
 const AuthenticatedRouteRouteWithChildren =
