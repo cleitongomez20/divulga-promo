@@ -8,7 +8,8 @@ import { Button } from '@/components/ui/button';
 import { supabase } from '@/integrations/supabase/client';
 import { pageHead } from '@/lib/metadata';
 import { workspaceQuery } from '@/lib/workspace-query';
-import { cancelPost, createManualPost, getPostsOverview, type PostView } from '@/lib/posts.functions';
+import { cancelPost, createManualPost, getPostsOverview, queuePostNow, type PostView } from '@/lib/posts.functions';
+import { HEARTBEAT_STALE_MS } from '@/lib/publishing';
 import { prepareFile, removeUploads, uploadPrepared } from '@/lib/media-upload';
 import { FORMAT_LABELS, FORMAT_RULES, MAX_CAPTION, POST_FORMATS, STATUS_LABELS, CANCELABLE_STATUSES, checkSchedule, formatInZone, validateMedia, zonedTimeToUtcIso, type PostFormat } from '@/lib/posts';
 
@@ -35,9 +36,13 @@ function PostsPage() {
   const { data: workspace } = useSuspenseQuery(workspaceQuery);
   const timezone = workspace.settings?.timezone ?? 'America/Sao_Paulo';
   const queryClient = useQueryClient();
-  const { data: overview, isLoading, isError } = useQuery({ queryKey: ['posts'], queryFn: () => getPostsOverview(), staleTime: 0 });
+  const { data: overview, isLoading, isError } = useQuery({
+    queryKey: ['posts'], queryFn: () => getPostsOverview(), staleTime: 0,
+    refetchInterval: query => (query.state.data?.posts.some(post => post.status === 'scheduled' || post.status === 'publishing') ? 30_000 : false),
+  });
   const create = useServerFn(createManualPost);
   const cancel = useServerFn(cancelPost);
+  const queue = useServerFn(queuePostNow);
 
   const [format, setFormat] = useState<PostFormat>('reel');
   const [productId, setProductId] = useState('');
@@ -134,13 +139,28 @@ function PostsPage() {
     finally { setBusy(''); }
   }
 
+  async function sendNow(post: PostView) {
+    setBusy('Colocando na fila...'); setMessage('');
+    try {
+      const result = await queue({ data: { postId: post.id } });
+      setMessage(result.status === 'ok' ? (result.message ?? 'Na fila.') : result.message);
+      await queryClient.invalidateQueries({ queryKey: ['posts'] });
+    } catch { setMessage('Não foi possível colocar na fila agora. Tente de novo.'); }
+    finally { setBusy(''); }
+  }
+
+  const waiting = overview?.posts.some(post => post.status === 'scheduled') ?? false;
+  const lastVisit = overview?.scheduler.lastVisitAt ? Date.parse(overview.scheduler.lastVisitAt) : null;
+  const schedulerSilent = waiting && (lastVisit === null || Date.now() - lastVisit > HEARTBEAT_STALE_MS);
+
   return <WorkspaceShell>
     <p className="text-xs font-semibold uppercase tracking-widest text-primary">Instagram</p>
     <h1 className="mt-3 text-3xl font-bold">Publicações</h1>
-    <p className="mt-2 max-w-2xl text-muted-foreground">Envie um vídeo, uma foto ou um carrossel e deixe pronto para publicar. O envio automático ao Instagram ainda não está ligado: por enquanto as publicações ficam guardadas aqui.</p>
+    <p className="mt-2 max-w-2xl text-muted-foreground">Envie um vídeo, uma foto ou um carrossel e deixe pronto para publicar. As publicações agendadas saem sozinhas no horário, pelo agendador que visita o app a cada minuto. Respeitamos o limite diário, o aquecimento da conta e o intervalo mínimo entre publicações da tela Configurações, então uma publicação pode sair um pouco depois do horário ou ir para o dia seguinte.</p>
 
     {overview && !overview.account && <div role="status" className="mt-6 border-l-4 border-primary bg-accent p-4 text-sm font-medium text-accent-foreground">Conecte o seu Instagram na tela <Link to="/conexoes" className="underline">Conexões</Link> para criar publicações.</div>}
     {overview?.account && !connected && <div role="status" className="mt-6 border-l-4 border-primary bg-accent p-4 text-sm font-medium text-accent-foreground">A conexão com o Instagram precisa ser refeita na tela <Link to="/conexoes" className="underline">Conexões</Link>.</div>}
+    {schedulerSilent && <div role="status" className="mt-6 border-l-4 border-primary bg-accent p-4 text-sm font-medium text-accent-foreground">O agendador não visitou o app nos últimos minutos, então as publicações agendadas não vão sair. Confira se o trabalho no cron-job.org está ativo.</div>}
     {isError && <p role="status" className="mt-6 text-sm font-medium">Não foi possível carregar suas publicações. Atualize a página.</p>}
 
     <form onSubmit={submit} className="mt-8 rounded-lg border bg-card p-5">
@@ -194,9 +214,12 @@ function PostsPage() {
         {post.scheduledAt && <span className="text-xs text-muted-foreground">{post.status === 'published' && post.publishedAt ? `Publicada em ${formatInZone(post.publishedAt, timezone)}` : `Para ${formatInZone(post.scheduledAt, timezone)}`}</span>}</div>
       <p className="mt-2 line-clamp-2 text-sm">{post.productTitle}</p>
       {post.caption && <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{post.caption}</p>}
-      {post.error && <p className="mt-1 text-xs font-medium text-destructive">{post.error}</p>}
+      {post.error && <p className={`mt-1 text-xs font-medium ${post.status === 'failed' ? 'text-destructive' : 'text-muted-foreground'}`}>{post.status === 'failed' ? post.error : `Aviso: ${post.error}`}</p>}
       {post.media.length > 0 && <div className="mt-3 flex flex-wrap gap-2">{post.media.slice(0, 5).map((media, index) => <div key={index} className="size-16 overflow-hidden rounded bg-muted">{media.kind === 'image' ? <img src={media.url} alt="" loading="lazy" className="size-full object-cover" /> : <video src={media.url} muted playsInline preload="metadata" className="size-full object-cover" />}</div>)}{post.media.length > 5 && <span className="self-center text-xs text-muted-foreground">+{post.media.length - 5}</span>}</div>}
-      {(CANCELABLE_STATUSES as readonly string[]).includes(post.status) && <Button type="button" variant="outline" size="sm" className="mt-3 min-h-11" disabled={Boolean(busy)} onClick={() => void cancelOne(post)}>Cancelar</Button>}
+      <div className="mt-3 flex flex-wrap gap-2">
+        {['draft', 'scheduled', 'failed'].includes(post.status) && <Button type="button" size="sm" className="min-h-11" disabled={Boolean(busy) || !connected} onClick={() => void sendNow(post)}><Send />{post.status === 'failed' ? 'Tentar de novo' : 'Publicar agora'}</Button>}
+        {(CANCELABLE_STATUSES as readonly string[]).includes(post.status) && <Button type="button" variant="outline" size="sm" className="min-h-11" disabled={Boolean(busy)} onClick={() => void cancelOne(post)}>Cancelar</Button>}
+      </div>
     </li>)}</ul>}
   </WorkspaceShell>;
 }

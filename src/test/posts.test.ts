@@ -14,7 +14,7 @@ vi.mock('@/integrations/supabase/auth-middleware', () => ({ requireSupabaseAuth:
 vi.mock('@/integrations/supabase/client.server', () => ({ get supabaseAdmin() { return state.db; } }));
 
 import { FORMAT_RULES, checkSchedule, createPostSchema, kindOfMime, ownsMediaPath, validateMedia, zonedTimeToUtcIso } from '@/lib/posts';
-import { createManualPost, cancelPost } from '@/lib/posts.functions';
+import { createManualPost, cancelPost, queuePostNow } from '@/lib/posts.functions';
 
 const USER = '11111111-1111-4111-8111-111111111111';
 const OTHER = '22222222-2222-4222-8222-222222222222';
@@ -190,5 +190,27 @@ describe('cancelPost', () => {
   it('cancels drafts and scheduled posts only', async () => {
     expect((await cancel([{ id: PRODUCT }])).status).toBe('ok');
     expect((await cancel([])).status).toBe('error');
+  });
+});
+
+describe('queuePostNow', () => {
+  const queue = (options: Options) => {
+    const { db, calls } = fakeDb(options); state.db = db;
+    return { calls, run: () => (queuePostNow as unknown as (args: unknown) => Promise<{ status: string; message?: string }>)({ ...ctx, data: { postId: PRODUCT } }) };
+  };
+  it('puts a draft, scheduled or failed post at the front of the queue and resets its tries', async () => {
+    const { calls, run } = queue({ account: { status: 'connected' }, changed: [{ id: PRODUCT }] });
+    expect((await run()).status).toBe('ok');
+    const values = calls.updates.find(update => update.table === 'posts')?.values as Record<string, unknown>;
+    expect(values).toMatchObject({ status: 'scheduled', attempts: 0, error: null });
+    expect(typeof values['scheduled_at']).toBe('string');
+  });
+  it('refuses when Instagram is not connected', async () => {
+    const { calls, run } = queue({ account: { status: 'expired' }, changed: [{ id: PRODUCT }] });
+    expect((await run()).message).toMatch(/Reconecte/); expect(calls.updates).toHaveLength(0);
+  });
+  it('refuses a post that cannot be sent now', async () => {
+    const { run } = queue({ account: { status: 'connected' }, changed: [] });
+    expect((await run()).status).toBe('error');
   });
 });

@@ -2,6 +2,7 @@ import { createServerFn } from '@tanstack/react-start';
 import { z } from 'zod';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { requireSupabaseAuth } from '@/integrations/supabase/auth-middleware';
+import { HEARTBEAT_SCOPE } from './publishing';
 import {
   CANCELABLE_STATUSES, FORMAT_LABELS, MAX_FILE_BYTES, MEDIA_BUCKET, checkSchedule, createPostSchema, kindOfMime, mimeOfExtension, ownsMediaPath, validateMedia,
   type MediaKind,
@@ -9,8 +10,8 @@ import {
 
 export type PostActionResult = { status: 'ok'; message?: string; postId?: string } | { status: 'error'; message: string };
 export type PostMediaView = { url: string; kind: MediaKind };
-export type PostView = { id: string; format: string; status: string; scheduledAt: string | null; publishedAt: string | null; caption: string; productTitle: string; error: string | null; media: PostMediaView[] };
-export type PostsOverview = { account: { username: string | null; status: string } | null; products: { id: string; title: string }[]; posts: PostView[] };
+export type PostView = { id: string; format: string; status: string; attempts: number; scheduledAt: string | null; publishedAt: string | null; caption: string; productTitle: string; error: string | null; media: PostMediaView[] };
+export type PostsOverview = { scheduler: { lastVisitAt: string | null }; account: { username: string | null; status: string } | null; products: { id: string; title: string }[]; posts: PostView[] };
 
 // The generated database types do not know the media columns and the post_media table yet, so this file talks to the database without them.
 async function admin() { return (await import('@/integrations/supabase/client.server')).supabaseAdmin as unknown as SupabaseClient; }
@@ -29,10 +30,11 @@ const log = (db: SupabaseClient, userId: string, action: string, result: string,
 
 export const getPostsOverview = createServerFn({ method: 'GET' }).middleware([requireSupabaseAuth]).handler(async ({ context }): Promise<PostsOverview> => {
   const db = await admin(); const userId = context.userId;
-  const [account, products, posts] = await Promise.all([
+  const [account, products, posts, heartbeat] = await Promise.all([
     db.from('instagram_accounts').select('id,username,status').eq('user_id', userId).order('created_at', { ascending: true }).limit(1).maybeSingle(),
     db.from('products').select('id,title').eq('user_id', userId).order('collected_at', { ascending: false }).limit(200),
-    db.from('posts').select('id,format,status,scheduled_at,published_at,caption,error,product_id,created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(50),
+    db.from('posts').select('id,format,status,scheduled_at,published_at,caption,error,product_id,attempts,created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(50),
+    db.from('connector_runtime').select('next_allowed_at').eq('scope', HEARTBEAT_SCOPE).maybeSingle(),
   ]);
   if (account.error || products.error || posts.error) throw new Error('Não foi possível carregar suas publicações. Tente de novo.');
   const postRows = (posts.data ?? []) as Row[];
@@ -60,10 +62,11 @@ export const getPostsOverview = createServerFn({ method: 'GET' }).middleware([re
   }
   const acc = account.data as Row | null;
   return {
+    scheduler: { lastVisitAt: textOrNull(((heartbeat.data ?? null) as Row | null)?.['next_allowed_at']) },
     account: acc ? { username: textOrNull(acc['username']), status: text(acc['status']) } : null,
     products: ((products.data ?? []) as Row[]).map(row => ({ id: text(row['id']), title: text(row['title']) })),
     posts: postRows.map(row => ({
-      id: text(row['id']), format: text(row['format']), status: text(row['status']), scheduledAt: textOrNull(row['scheduled_at']), publishedAt: textOrNull(row['published_at']),
+      id: text(row['id']), format: text(row['format']), status: text(row['status']), attempts: Number(row['attempts'] ?? 0), scheduledAt: textOrNull(row['scheduled_at']), publishedAt: textOrNull(row['published_at']),
       caption: text(row['caption']), productTitle: titleOf.get(text(row['product_id'])) ?? 'Produto removido', error: textOrNull(row['error']), media: mediaOf.get(text(row['id'])) ?? [],
     })),
   };
@@ -143,4 +146,20 @@ export const cancelPost = createServerFn({ method: 'POST' }).middleware([require
       await log(db, userId, 'Publicação cancelada', 'Cancelada pelo usuário', { post_id: data.postId });
       return { status: 'ok', message: 'Publicação cancelada.' };
     } catch { return { status: 'error', message: 'Não foi possível cancelar agora. Tente de novo.' }; }
+  });
+
+/** "Publicar agora" for drafts and scheduled posts, "Tentar de novo" for failed ones: the publication goes to the front of the queue and the scheduler sends it on its next visit. */
+export const queuePostNow = createServerFn({ method: 'POST' }).middleware([requireSupabaseAuth])
+  .inputValidator(input => z.object({ postId: z.string().uuid() }).parse(input)).handler(async ({ context, data }): Promise<PostActionResult> => {
+    const db = await admin(); const userId = context.userId;
+    try {
+      const { data: account } = await db.from('instagram_accounts').select('status').eq('user_id', userId).order('created_at', { ascending: true }).limit(1).maybeSingle();
+      if (!account || text((account as Row)['status']) !== 'connected') return { status: 'error', message: 'Reconecte o Instagram na tela Conexões antes de publicar.' };
+      const { data: changed, error } = await db.from('posts').update({ status: 'scheduled', scheduled_at: new Date().toISOString(), attempts: 0, error: null })
+        .eq('id', data.postId).eq('user_id', userId).in('status', ['draft', 'scheduled', 'failed']).select('id');
+      if (error) return { status: 'error', message: 'Não foi possível colocar na fila agora. Tente de novo.' };
+      if (!changed?.length) return { status: 'error', message: 'Essa publicação não pode ser enviada agora.' };
+      await log(db, userId, 'Publicação na fila', 'Enviada para publicar agora', { post_id: data.postId });
+      return { status: 'ok', message: 'Na fila. Ela sai na próxima passada do agendador, em até 1 minuto.' };
+    } catch { return { status: 'error', message: 'Não foi possível colocar na fila agora. Tente de novo.' }; }
   });
