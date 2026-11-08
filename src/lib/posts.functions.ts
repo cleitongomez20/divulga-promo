@@ -173,3 +173,35 @@ export const queuePostNow = createServerFn({ method: 'POST' }).middleware([requi
       return { status: 'ok', message: 'Na fila. Ela sai na próxima passada do agendador, em até 1 minuto.' };
     } catch { return { status: 'error', message: 'Não foi possível colocar na fila agora. Tente de novo.' }; }
   });
+
+/** Schedules a draft (or moves a scheduled post) to the chosen time. */
+export const schedulePostAt = createServerFn({ method: 'POST' }).middleware([requireSupabaseAuth])
+  .inputValidator(input => z.object({ postId: z.string().uuid(), scheduledAt: z.string().datetime({ offset: true }) }).parse(input)).handler(async ({ context, data }): Promise<PostActionResult> => {
+    const db = await admin(); const userId = context.userId;
+    try {
+      const scheduleProblem = checkSchedule(data.scheduledAt);
+      if (scheduleProblem) return { status: 'error', message: scheduleProblem };
+      const { data: account } = await db.from('instagram_accounts').select('status').eq('user_id', userId).order('created_at', { ascending: true }).limit(1).maybeSingle();
+      if (!account || text((account as Row)['status']) !== 'connected') return { status: 'error', message: 'Reconecte o Instagram na tela Conexões antes de agendar.' };
+      const { data: changed, error } = await db.from('posts').update({ status: 'scheduled', scheduled_at: data.scheduledAt, attempts: 0, error: null })
+        .eq('id', data.postId).eq('user_id', userId).in('status', ['draft', 'scheduled']).select('id');
+      if (error) return { status: 'error', message: 'Não foi possível agendar agora. Tente de novo.' };
+      if (!changed?.length) return { status: 'error', message: 'Só dá para agendar rascunhos e publicações já agendadas.' };
+      await log(db, userId, 'Publicação agendada', 'Agendada pelo usuário', { post_id: data.postId, scheduled_at: data.scheduledAt });
+      return { status: 'ok', message: 'Publicação agendada.' };
+    } catch { return { status: 'error', message: 'Não foi possível agendar agora. Tente de novo.' }; }
+  });
+
+/** Edits the caption of a draft. Published or queued posts are not touched. */
+export const updateDraftCaption = createServerFn({ method: 'POST' }).middleware([requireSupabaseAuth])
+  .inputValidator(input => z.object({ postId: z.string().uuid(), caption: z.string().max(MAX_CAPTION, `A legenda pode ter no máximo ${MAX_CAPTION} caracteres.`) }).parse(input)).handler(async ({ context, data }): Promise<PostActionResult> => {
+    const db = await admin(); const userId = context.userId;
+    try {
+      const { data: changed, error } = await db.from('posts').update({ caption: data.caption.trim() })
+        .eq('id', data.postId).eq('user_id', userId).eq('status', 'draft').select('id');
+      if (error) return { status: 'error', message: 'Não foi possível salvar a legenda agora. Tente de novo.' };
+      if (!changed?.length) return { status: 'error', message: 'Só dá para editar a legenda de rascunhos.' };
+      await log(db, userId, 'Legenda editada', 'Legenda do rascunho atualizada', { post_id: data.postId });
+      return { status: 'ok', message: 'Legenda salva.' };
+    } catch { return { status: 'error', message: 'Não foi possível salvar a legenda agora. Tente de novo.' }; }
+  });
