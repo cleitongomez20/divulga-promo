@@ -10,8 +10,9 @@ import {
 
 export type PostActionResult = { status: 'ok'; message?: string; postId?: string } | { status: 'error'; message: string };
 export type PostMediaView = { url: string; kind: MediaKind };
-export type PostView = { id: string; format: string; status: string; attempts: number; scheduledAt: string | null; publishedAt: string | null; caption: string; productTitle: string; error: string | null; media: PostMediaView[] };
-export type PostsOverview = { scheduler: { lastVisitAt: string | null }; account: { username: string | null; status: string } | null; products: { id: string; title: string }[]; posts: PostView[] };
+export type AiPlanView = { angle: string | null; reason: string | null; linkMissing: boolean };
+export type PostView = { id: string; format: string; status: string; attempts: number; scheduledAt: string | null; publishedAt: string | null; caption: string; productTitle: string; error: string | null; source: string; aiPlan: AiPlanView | null; media: PostMediaView[] };
+export type PostsOverview = { scheduler: { lastVisitAt: string | null }; account: { username: string | null; status: string } | null; ai: { connected: boolean }; products: { id: string; title: string }[]; posts: PostView[] };
 
 // The generated database types do not know the media columns and the post_media table yet, so this file talks to the database without them.
 async function admin() { return (await import('@/integrations/supabase/client.server')).supabaseAdmin as unknown as SupabaseClient; }
@@ -33,8 +34,9 @@ export const getPostsOverview = createServerFn({ method: 'GET' }).middleware([re
   const [account, products, posts, heartbeat] = await Promise.all([
     db.from('instagram_accounts').select('id,username,status').eq('user_id', userId).order('created_at', { ascending: true }).limit(1).maybeSingle(),
     db.from('products').select('id,title').eq('user_id', userId).order('collected_at', { ascending: false }).limit(200),
-    db.from('posts').select('id,format,status,scheduled_at,published_at,caption,error,product_id,attempts,created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(50),
+    db.from('posts').select('id,format,status,scheduled_at,published_at,caption,error,product_id,attempts,created_at,source,ai_plan').eq('user_id', userId).order('created_at', { ascending: false }).limit(50),
     db.from('connector_runtime').select('next_allowed_at').eq('scope', HEARTBEAT_SCOPE).maybeSingle(),
+    db.from('ai_connections').select('credential_id').eq('user_id', userId).maybeSingle(),
   ]);
   if (account.error || products.error || posts.error) throw new Error('Não foi possível carregar suas publicações. Tente de novo.');
   const postRows = (posts.data ?? []) as Row[];
