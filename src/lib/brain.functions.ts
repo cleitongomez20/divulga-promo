@@ -24,6 +24,9 @@ export const generateContent = createServerFn({ method: 'POST' }).middleware([re
       const { openConnector } = await import('./shopee-sync.server');
       const connector = await openConnector(supabaseAdmin, userId);
       if (!connector) return null;
+      // Same safety pause between link requests as the Produtos screen (3 seconds per user).
+      const { data: linkWait } = await db.rpc('reserve_connector_slot', { p_scope: `shopee-link:${userId}`, p_interval_ms: 3000 });
+      if (typeof linkWait === 'number' && linkWait > 0) await new Promise(resolve => setTimeout(resolve, Math.min(linkWait, 4000)));
       const result = await connector.execute({ query: buildShortLinkMutation(productUrl, subIds) });
       if (!result.ok) return null;
       const link = safeUrl((result.data['generateShortLink'] as { shortLink?: unknown } | null | undefined)?.shortLink);
