@@ -31,7 +31,7 @@ const log = (db: SupabaseClient, userId: string, action: string, result: string,
 
 export const getPostsOverview = createServerFn({ method: 'GET' }).middleware([requireSupabaseAuth]).handler(async ({ context }): Promise<PostsOverview> => {
   const db = await admin(); const userId = context.userId;
-  const [account, products, posts, heartbeat] = await Promise.all([
+  const [account, products, posts, heartbeat, aiConnection] = await Promise.all([
     db.from('instagram_accounts').select('id,username,status').eq('user_id', userId).order('created_at', { ascending: true }).limit(1).maybeSingle(),
     db.from('products').select('id,title').eq('user_id', userId).order('collected_at', { ascending: false }).limit(200),
     db.from('posts').select('id,format,status,scheduled_at,published_at,caption,error,product_id,attempts,created_at,source,ai_plan').eq('user_id', userId).order('created_at', { ascending: false }).limit(50),
@@ -63,13 +63,21 @@ export const getPostsOverview = createServerFn({ method: 'GET' }).middleware([re
     mediaOf.set(text(link['post_id']), list);
   }
   const acc = account.data as Row | null;
+  const planOf = (row: Row): AiPlanView | null => {
+    const plan = row['ai_plan'];
+    if (!plan || typeof plan !== 'object' || Array.isArray(plan)) return null;
+    const data = plan as Row;
+    return { angle: textOrNull(data['angle']), reason: textOrNull(data['reason']), linkMissing: data['linkMissing'] === true };
+  };
   return {
     scheduler: { lastVisitAt: textOrNull(((heartbeat.data ?? null) as Row | null)?.['next_allowed_at']) },
     account: acc ? { username: textOrNull(acc['username']), status: text(acc['status']) } : null,
+    ai: { connected: Boolean(((aiConnection.data ?? null) as Row | null)?.['credential_id']) },
     products: ((products.data ?? []) as Row[]).map(row => ({ id: text(row['id']), title: text(row['title']) })),
     posts: postRows.map(row => ({
       id: text(row['id']), format: text(row['format']), status: text(row['status']), attempts: Number(row['attempts'] ?? 0), scheduledAt: textOrNull(row['scheduled_at']), publishedAt: textOrNull(row['published_at']),
-      caption: text(row['caption']), productTitle: titleOf.get(text(row['product_id'])) ?? 'Produto removido', error: textOrNull(row['error']), media: mediaOf.get(text(row['id'])) ?? [],
+      caption: text(row['caption']), productTitle: titleOf.get(text(row['product_id'])) ?? 'Produto removido', error: textOrNull(row['error']),
+      source: text(row['source']) || 'manual', aiPlan: planOf(row), media: mediaOf.get(text(row['id'])) ?? [],
     })),
   };
 });
