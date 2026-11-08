@@ -1,94 +1,206 @@
 import { createServerFn } from '@tanstack/react-start';
 import { z } from 'zod';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { requireSupabaseAuth } from '@/integrations/supabase/auth-middleware';
-import type { Json } from '@/integrations/supabase/types';
+import { HEARTBEAT_SCOPE } from './publishing';
 import {
-  MAX_SEARCH_PAGES, PAGE_SIZE, buildProductQuery, buildShortLinkMutation, cleanKeyword, encodeSubIds, isShopeeUrl, normalizeProducts, safeUrl,
-    simulatedProducts, toProductRow, unknownProductField, type ProductItem,
-    } from './products';
+  CANCELABLE_STATUSES, FORMAT_LABELS, MAX_CAPTION, MAX_FILE_BYTES, MEDIA_BUCKET, checkSchedule, createPostSchema, kindOfMime, mimeOfExtension, ownsMediaPath, validateMedia,
+  type MediaKind,
+} from './posts';
 
-    const MAX_FIELD_PRUNES = 8;
-    /** Fields Shopee said do not exist. Remembered while this server instance lives so later searches skip them. */
-    const rejectedFields = new Set<string>();
+export type PostActionResult = { status: 'ok'; message?: string; postId?: string } | { status: 'error'; message: string };
+export type PostMediaView = { url: string; kind: MediaKind };
+export type AiPlanView = { reason: string; angle: string; hook: string; linkMissing: boolean };
+export type PostView = { id: string; format: string; status: string; attempts: number; source: string; aiPlan: AiPlanView | null; hasLink: boolean; scheduledAt: string | null; publishedAt: string | null; caption: string; productTitle: string; error: string | null; media: PostMediaView[] };
+export type PostsOverview = { ai: { connected: boolean }; scheduler: { lastVisitAt: string | null }; account: { username: string | null; status: string } | null; products: { id: string; title: string }[]; posts: PostView[] };
 
-    export type SearchResult =
-      | { status: 'ok'; items: ProductItem[]; page: number; hasNextPage: boolean; simulated: boolean }
-        | { status: 'wait' | 'error'; message: string; waitSeconds?: number };
-        export type LinkResult = { status: 'ok'; shortLink: string; simulated: boolean } | { status: 'wait' | 'error'; message: string; waitSeconds?: number };
+// The generated database types do not know the media columns and the post_media table yet, so this file talks to the database without them.
+async function admin() { return (await import('@/integrations/supabase/client.server')).supabaseAdmin as unknown as SupabaseClient; }
+type Row = Record<string, unknown>;
+const text = (value: unknown) => (typeof value === 'string' ? value : '');
+const textOrNull = (value: unknown) => (typeof value === 'string' && value ? value : null);
 
-        const searchSchema = z.object({
-          keyword: z.string().max(200).optional(),
-            sortType: z.number().int().min(1).max(5).default(2),
-              page: z.number().int().min(1).max(MAX_SEARCH_PAGES).default(1),
-                productCatId: z.number().int().positive().max(2_000_000_000).optional(),
-                });
-                const linkSchema = z.object({ productLink: z.string().url().max(600), itemId: z.string().regex(/^\d{1,20}$/).optional() });
+function aiPlanOf(value: unknown): AiPlanView | null {
+  if (!value || typeof value !== 'object') return null;
+  const plan = value as Row;
+  return { reason: text(plan['reason']), angle: text(plan['angle']), hook: text(plan['hook']), linkMissing: plan['linkMissing'] === true };
+}
 
-                type Admin = typeof import('@/integrations/supabase/client.server')['supabaseAdmin'];
-                /** Spacing between calls for one user. Returns how many seconds to wait, or 0 when the call may go ahead. */
-                async function pauseSeconds(admin: Admin, scope: string, intervalMs: number) {
-                  const { data, error } = await admin.rpc('reserve_connector_slot', { p_scope: scope, p_interval_ms: intervalMs });
-                    if (error) throw new Error('Não foi possível aplicar a pausa de segurança.');
-                      return data === 0 ? 0 : Math.max(1, Math.ceil((data ?? 3000) / 1000));
-                      }
-                      const log = (admin: Admin, userId: string, action: string, result: string, details: Record<string, unknown> = {}) =>
-                        admin.from('activity_log').insert({ user_id: userId, action, result, details: details as Json });
+/** Spacing between registrations for one user, so a double click cannot create the same publication twice. */
+async function tooSoon(db: SupabaseClient, userId: string) {
+  const { data, error } = await db.rpc('reserve_connector_slot', { p_scope: `post-create:${userId}`, p_interval_ms: 2000 });
+  if (error) return false;
+  return typeof data === 'number' && data > 0;
+}
+const log = (db: SupabaseClient, userId: string, action: string, result: string, details: Record<string, unknown> = {}) =>
+  db.from('activity_log').insert({ user_id: userId, action, result, details });
 
-                        export const searchProducts = createServerFn({ method: 'POST' }).middleware([requireSupabaseAuth])
-                          .inputValidator(input => searchSchema.parse(input ?? {})).handler(async ({ context, data }): Promise<SearchResult> => {
-                              const { supabaseAdmin: admin } = await import('@/integrations/supabase/client.server');
-                                  const { openConnector } = await import('./shopee-sync.server');
-                                      const userId = context.userId;
-                                          try {
-                                                const wait = await pauseSeconds(admin, `shopee-search:${userId}`, 1500);
-                                                      if (wait > 0) return { status: 'wait', message: 'Aguarde alguns segundos antes de buscar de novo.', waitSeconds: wait };
-                                                            const connector = await openConnector(admin, userId);
-                                                                  const search = { keyword: cleanKeyword(data.keyword), sortType: data.sortType, page: data.page, limit: PAGE_SIZE, productCatId: data.productCatId };
-                                                                        if (!connector) return { status: 'ok', items: simulatedProducts(search.keyword, search.sortType), page: 1, hasNextPage: false, simulated: true };
+export const getPostsOverview = createServerFn({ method: 'GET' }).middleware([requireSupabaseAuth]).handler(async ({ context }): Promise<PostsOverview> => {
+  const db = await admin(); const userId = context.userId;
+  const [account, products, posts, heartbeat, aiConnection] = await Promise.all([
+    db.from('instagram_accounts').select('id,username,status').eq('user_id', userId).order('created_at', { ascending: true }).limit(1).maybeSingle(),
+    db.from('products').select('id,title').eq('user_id', userId).order('collected_at', { ascending: false }).limit(200),
+    db.from('posts').select('id,format,status,scheduled_at,published_at,caption,error,product_id,attempts,source,ai_plan,affiliate_link,created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(50),
+    db.from('connector_runtime').select('next_allowed_at').eq('scope', HEARTBEAT_SCOPE).maybeSingle(),
+    db.from('ai_connections').select('status,credential_id').eq('user_id', userId).maybeSingle(),
+  ]);
+  if (account.error || products.error || posts.error) throw new Error('Não foi possível carregar suas publicações. Tente de novo.');
+  const postRows = (posts.data ?? []) as Row[];
+  const ids = postRows.map(row => text(row['id']));
+  const productIds = [...new Set(postRows.map(row => text(row['product_id'])))];
+  const [titles, links] = await Promise.all([
+    productIds.length ? db.from('products').select('id,title').eq('user_id', userId).in('id', productIds) : Promise.resolve({ data: [] as Row[], error: null }),
+    ids.length ? db.from('post_media').select('post_id,asset_id,position').eq('user_id', userId).in('post_id', ids).order('position', { ascending: true }) : Promise.resolve({ data: [] as Row[], error: null }),
+  ]);
+  if (titles.error || links.error) throw new Error('Não foi possível carregar suas publicações. Tente de novo.');
+  const linkRows = (links.data ?? []) as Row[];
+  const assetIds = [...new Set(linkRows.map(row => text(row['asset_id'])))];
+  const assets = assetIds.length ? await db.from('video_assets').select('id,storage_path,media_type').eq('user_id', userId).in('id', assetIds) : { data: [] as Row[], error: null };
+  if (assets.error) throw new Error('Não foi possível carregar suas publicações. Tente de novo.');
+  const titleOf = new Map(((titles.data ?? []) as Row[]).map(row => [text(row['id']), text(row['title'])]));
+  const assetOf = new Map(((assets.data ?? []) as Row[]).map(row => [text(row['id']), row]));
+  const mediaOf = new Map<string, PostMediaView[]>();
+  for (const link of linkRows) {
+    const asset = assetOf.get(text(link['asset_id']));
+    const path = asset ? textOrNull(asset['storage_path']) : null;
+    if (!asset || !path) continue;
+    const list = mediaOf.get(text(link['post_id'])) ?? [];
+    list.push({ url: db.storage.from(MEDIA_BUCKET).getPublicUrl(path).data.publicUrl, kind: text(asset['media_type']) === 'video' ? 'video' : 'image' });
+    mediaOf.set(text(link['post_id']), list);
+  }
+  const acc = account.data as Row | null;
+  const aiRow = (aiConnection.data ?? null) as Row | null;
+  return {
+    ai: { connected: Boolean(aiRow && textOrNull(aiRow['credential_id']) && text(aiRow['status']) === 'connected') },
+    scheduler: { lastVisitAt: textOrNull(((heartbeat.data ?? null) as Row | null)?.['next_allowed_at']) },
+    account: acc ? { username: textOrNull(acc['username']), status: text(acc['status']) } : null,
+    products: ((products.data ?? []) as Row[]).map(row => ({ id: text(row['id']), title: text(row['title']) })),
+    posts: postRows.map(row => ({
+      id: text(row['id']), format: text(row['format']), status: text(row['status']), attempts: Number(row['attempts'] ?? 0), source: text(row['source']) || 'manual', aiPlan: aiPlanOf(row['ai_plan']), hasLink: Boolean(textOrNull(row['affiliate_link'])), scheduledAt: textOrNull(row['scheduled_at']), publishedAt: textOrNull(row['published_at']),
+      caption: text(row['caption']), productTitle: titleOf.get(text(row['product_id'])) ?? 'Produto removido', error: textOrNull(row['error']), media: mediaOf.get(text(row['id'])) ?? [],
+    })),
+  };
+});
 
-                                                                              const omit = new Set(rejectedFields); let prunes = 0;
-                                                                                    for (;;) {
-                                                                                            const result = await connector.execute({ query: buildProductQuery(search, [...omit]) });
-                                                                                                    if (!result.ok) {
-                                                                                                              const unknown = result.errors.map(e => unknownProductField(e.message)).find((name): name is string => !!name);
-                                                                                                                        if (unknown && !omit.has(unknown) && prunes < MAX_FIELD_PRUNES) { omit.add(unknown); rejectedFields.add(unknown); prunes++; continue; }
-                                                                                                                                  await log(admin, userId, 'Busca de produtos', result.message, { codes: result.errors.map(e => e.extensions.code), errors: result.errors.map(e => ({ code: e.extensions.code, message: e.message })), omitted_fields: [...omit] });
-                                                                                                                                            return { status: 'error', message: result.message };
-                                                                                                                                                    }
-                                                                                                                                                            const report = result.data['productOfferV2'] as { nodes?: unknown; pageInfo?: { hasNextPage?: unknown } } | null | undefined;
-                                                                                                                                                                    const items = normalizeProducts(report?.nodes);
-                                                                                                                                                                            const now = new Date().toISOString();
-                                                                                                                                                                                    if (items.length) {
-                                                                                                                                                                                              const { error } = await admin.from('products').upsert(items.map(item => toProductRow(item, userId, now)), { onConflict: 'user_id,marketplace,external_id' });
-                                                                                                                                                                                                        if (error) await log(admin, userId, 'Busca de produtos', 'Os produtos foram encontrados, mas não foi possível salvá-los.', {});
-                                                                                                                                                                                                                }
-                                                                                                                                                                                                                        return { status: 'ok', items, page: data.page, hasNextPage: report?.pageInfo?.hasNextPage === true && data.page < MAX_SEARCH_PAGES, simulated: false };
-                                                                                                                                                                                                                              }
-                                                                                                                                                                                                                                  } catch (error) {
-                                                                                                                                                                                                                                        return { status: 'error', message: error instanceof Error && error.message ? error.message : 'Não foi possível buscar produtos agora.' };
-                                                                                                                                                                                                                                            }
-                                                                                                                                                                                                                                              });
+/** Looks at the stored file itself (size and type are read from the storage, never trusted from the browser). */
+async function inspectObject(db: SupabaseClient, userId: string, path: string) {
+  const name = path.slice(userId.length + 1);
+  const { data, error } = await db.storage.from(MEDIA_BUCKET).list(userId, { limit: 100, search: name });
+  if (error) return null;
+  const found = (data ?? []).find(item => item.name === name);
+  const meta = found?.metadata as { size?: unknown; mimetype?: unknown } | null | undefined;
+  if (!found || !meta) return null;
+  return { size: Number(meta.size ?? 0), mime: typeof meta.mimetype === 'string' ? meta.mimetype : '' };
+}
 
-                                                                                                                                                                                                                                              export const createTestLink = createServerFn({ method: 'POST' }).middleware([requireSupabaseAuth])
-                                                                                                                                                                                                                                                .inputValidator(input => linkSchema.parse(input)).handler(async ({ context, data }): Promise<LinkResult> => {
-                                                                                                                                                                                                                                                    const { supabaseAdmin: admin } = await import('@/integrations/supabase/client.server');
-                                                                                                                                                                                                                                                        const { openConnector } = await import('./shopee-sync.server');
-                                                                                                                                                                                                                                                            const userId = context.userId;
-                                                                                                                                                                                                                                                                if (!isShopeeUrl(data.productLink)) return { status: 'error', message: 'Só é possível gerar links para produtos da Shopee.' };
-                                                                                                                                                                                                                                                                    try {
-                                                                                                                                                                                                                                                                          const wait = await pauseSeconds(admin, `shopee-link:${userId}`, 3000);
-                                                                                                                                                                                                                                                                                if (wait > 0) return { status: 'wait', message: 'Aguarde alguns segundos antes de gerar outro link.', waitSeconds: wait };
-                                                                                                                                                                                                                                                                                      const connector = await openConnector(admin, userId);
-                                                                                                                                                                                                                                                                                            if (!connector) return { status: 'ok', shortLink: 'https://shope.ee/exemplo-simulado', simulated: true };
-                                                                                                                                                                                                                                                                                                  // Test links carry recognisable sub IDs, so a sale from one of them is easy to spot in the sales list.
-                                                                                                                                                                                                                                                                                                        const subIds = encodeSubIds(['teste', 'painel', data.itemId ?? '']);
-                                                                                                                                                                                                                                                                                                              const result = await connector.execute({ query: buildShortLinkMutation(data.productLink, subIds) });
-                                                                                                                                                                                                                                                                                                                    if (!result.ok) { await log(admin, userId, 'Link de teste', result.message, { codes: result.errors.map(e => e.extensions.code) }); return { status: 'error', message: result.message }; }
-                                                                                                                                                                                                                                                                                                                          const shortLink = safeUrl((result.data['generateShortLink'] as { shortLink?: unknown } | null | undefined)?.shortLink);
-                                                                                                                                                                                                                                                                                                                                if (!shortLink || !isShopeeUrl(shortLink)) return { status: 'error', message: 'A Shopee não devolveu um link válido. Tente de novo.' };
-                                                                                                                                                                                                                                                                                                                                      await log(admin, userId, 'Link de teste', 'Link de teste gerado', { item_id: data.itemId ?? null });
-                                                                                                                                                                                                                                                                                                                                            return { status: 'ok', shortLink, simulated: false };
-                                                                                                                                                                                                                                                                                                                                                } catch (error) {
-                                                                                                                                                                                                                                                                                                                                                      return { status: 'error', message: error instanceof Error && error.message ? error.message : 'Não foi possível gerar o link agora.' };
-                                                                                                                                                                                                                                                                                                                                                          }
-                                                                                                                                                                                                                                                                                                                                                            });
+/** Manual import: the files are already in the user's folder; this registers them and creates the publication (draft or scheduled). */
+export const createManualPost = createServerFn({ method: 'POST' }).middleware([requireSupabaseAuth])
+  .inputValidator(input => createPostSchema.parse(input)).handler(async ({ context, data }): Promise<PostActionResult> => {
+    const db = await admin(); const userId = context.userId;
+    try {
+      if (await tooSoon(db, userId)) return { status: 'error', message: 'Aguarde alguns segundos e tente de novo.' };
+      const scheduleProblem = checkSchedule(data.scheduledAt);
+      if (scheduleProblem) return { status: 'error', message: scheduleProblem };
+      if (data.media.some(item => !ownsMediaPath(item.path, userId))) return { status: 'error', message: 'Esses arquivos não pertencem à sua conta. Envie de novo.' };
+
+      const { data: account } = await db.from('instagram_accounts').select('id,status').eq('user_id', userId).order('created_at', { ascending: true }).limit(1).maybeSingle();
+      if (!account) return { status: 'error', message: 'Conecte o Instagram na tela Conexões antes de criar publicações.' };
+      const { data: product } = await db.from('products').select('id').eq('user_id', userId).eq('id', data.productId).maybeSingle();
+      if (!product) return { status: 'error', message: 'Não encontrei esse produto. Escolha outro da lista.' };
+
+      const inspected = await Promise.all(data.media.map(async item => ({ path: item.path, info: await inspectObject(db, userId, item.path) })));
+      const files: { path: string; mime: string; size: number; kind: MediaKind }[] = [];
+      for (const { path, info } of inspected) {
+        if (!info) return { status: 'error', message: 'Um dos arquivos não chegou ao armazenamento. Envie de novo.' };
+        const kind = kindOfMime(info.mime);
+        const expected = mimeOfExtension(path.slice(path.lastIndexOf('.') + 1));
+        if (!kind || expected !== info.mime) return { status: 'error', message: 'Tipo de arquivo não aceito. Use foto JPEG ou vídeo MP4/MOV.' };
+        if (info.size <= 0 || info.size > MAX_FILE_BYTES) return { status: 'error', message: 'Cada arquivo pode ter no máximo 50 MB.' };
+        files.push({ path, mime: info.mime, size: info.size, kind });
+      }
+      const mediaProblem = validateMedia(data.format, files.map(file => file.kind));
+      if (mediaProblem) return { status: 'error', message: mediaProblem };
+
+      const accountId = text((account as Row)['id']);
+      const assetRows = files.map(file => ({ id: crypto.randomUUID(), user_id: userId, instagram_account_id: accountId, storage_path: file.path, media_type: file.kind, mime_type: file.mime, size_bytes: file.size, source: 'manual' }));
+      const postId = crypto.randomUUID();
+      const status = data.scheduledAt ? 'scheduled' : 'draft';
+      const undo = async () => { await db.from('posts').delete().eq('id', postId).eq('user_id', userId); await db.from('video_assets').delete().in('id', assetRows.map(row => row.id)).eq('user_id', userId); };
+
+      const assets = await db.from('video_assets').insert(assetRows);
+      if (assets.error) return { status: 'error', message: 'Não foi possível registrar os arquivos. Tente de novo.' };
+      const post = await db.from('posts').insert({
+        id: postId, user_id: userId, instagram_account_id: accountId, product_id: data.productId, format: data.format, status, scheduled_at: data.scheduledAt,
+        caption: data.caption || null, affiliate_link: data.affiliateLink || null, video_asset_id: assetRows[0]?.id ?? null, idempotency_key: data.requestId,
+      });
+      if (post.error) {
+        await undo();
+        if (post.error.code === '23505') return { status: 'ok', message: 'Essa publicação já tinha sido registrada.' };
+        return { status: 'error', message: 'Não foi possível criar a publicação. Tente de novo.' };
+      }
+      const media = await db.from('post_media').insert(assetRows.map((row, position) => ({ user_id: userId, post_id: postId, asset_id: row.id, position })));
+      if (media.error) { await undo(); return { status: 'error', message: 'Não foi possível ligar os arquivos à publicação. Tente de novo.' }; }
+
+      await log(db, userId, 'Publicação criada', `${FORMAT_LABELS[data.format]} ${status === 'scheduled' ? 'agendada' : 'salva como rascunho'}`, { post_id: postId, format: data.format, files: files.length });
+      return { status: 'ok', postId, message: status === 'scheduled' ? 'Publicação agendada.' : 'Rascunho salvo.' };
+    } catch { return { status: 'error', message: 'Não foi possível concluir agora. Tente de novo.' }; }
+  });
+
+export const cancelPost = createServerFn({ method: 'POST' }).middleware([requireSupabaseAuth])
+  .inputValidator(input => z.object({ postId: z.string().uuid() }).parse(input)).handler(async ({ context, data }): Promise<PostActionResult> => {
+    const db = await admin(); const userId = context.userId;
+    try {
+      const { data: changed, error } = await db.from('posts').update({ status: 'canceled' }).eq('id', data.postId).eq('user_id', userId).in('status', [...CANCELABLE_STATUSES]).select('id');
+      if (error) return { status: 'error', message: 'Não foi possível cancelar agora. Tente de novo.' };
+      if (!changed?.length) return { status: 'error', message: 'Só dá para cancelar rascunhos e publicações agendadas.' };
+      await log(db, userId, 'Publicação cancelada', 'Cancelada pelo usuário', { post_id: data.postId });
+      return { status: 'ok', message: 'Publicação cancelada.' };
+    } catch { return { status: 'error', message: 'Não foi possível cancelar agora. Tente de novo.' }; }
+  });
+
+/** "Publicar agora" for drafts and scheduled posts, "Tentar de novo" for failed ones: the publication goes to the front of the queue and the scheduler sends it on its next visit. */
+export const queuePostNow = createServerFn({ method: 'POST' }).middleware([requireSupabaseAuth])
+  .inputValidator(input => z.object({ postId: z.string().uuid() }).parse(input)).handler(async ({ context, data }): Promise<PostActionResult> => {
+    const db = await admin(); const userId = context.userId;
+    try {
+      const { data: account } = await db.from('instagram_accounts').select('status').eq('user_id', userId).order('created_at', { ascending: true }).limit(1).maybeSingle();
+      if (!account || text((account as Row)['status']) !== 'connected') return { status: 'error', message: 'Reconecte o Instagram na tela Conexões antes de publicar.' };
+      const { data: changed, error } = await db.from('posts').update({ status: 'scheduled', scheduled_at: new Date().toISOString(), attempts: 0, error: null })
+        .eq('id', data.postId).eq('user_id', userId).in('status', ['draft', 'scheduled', 'failed']).select('id');
+      if (error) return { status: 'error', message: 'Não foi possível colocar na fila agora. Tente de novo.' };
+      if (!changed?.length) return { status: 'error', message: 'Essa publicação não pode ser enviada agora.' };
+      await log(db, userId, 'Publicação na fila', 'Enviada para publicar agora', { post_id: data.postId });
+      return { status: 'ok', message: 'Na fila. Ela sai na próxima passada do agendador, em até 1 minuto.' };
+    } catch { return { status: 'error', message: 'Não foi possível colocar na fila agora. Tente de novo.' }; }
+  });
+
+/** The user edits the text of a draft before approving it. */
+export const updateDraftCaption = createServerFn({ method: 'POST' }).middleware([requireSupabaseAuth])
+  .inputValidator(input => z.object({ postId: z.string().uuid(), caption: z.string().trim().max(MAX_CAPTION, `A legenda pode ter no máximo ${MAX_CAPTION} caracteres.`) }).parse(input))
+  .handler(async ({ context, data }): Promise<PostActionResult> => {
+    const db = await admin(); const userId = context.userId;
+    try {
+      const { data: changed, error } = await db.from('posts').update({ caption: data.caption || null }).eq('id', data.postId).eq('user_id', userId).eq('status', 'draft').select('id');
+      if (error) return { status: 'error', message: 'Não foi possível salvar a legenda agora. Tente de novo.' };
+      if (!changed?.length) return { status: 'error', message: 'Só dá para editar a legenda de rascunhos.' };
+      return { status: 'ok', message: 'Legenda salva.' };
+    } catch { return { status: 'error', message: 'Não foi possível salvar a legenda agora. Tente de novo.' }; }
+  });
+
+/** Approves a draft (or changes the time of a scheduled post): it will be published at the chosen time, within the daily limit. */
+export const schedulePostAt = createServerFn({ method: 'POST' }).middleware([requireSupabaseAuth])
+  .inputValidator(input => z.object({ postId: z.string().uuid(), scheduledAt: z.string().datetime() }).parse(input)).handler(async ({ context, data }): Promise<PostActionResult> => {
+    const db = await admin(); const userId = context.userId;
+    try {
+      const problem = checkSchedule(data.scheduledAt);
+      if (problem) return { status: 'error', message: problem };
+      const { data: account } = await db.from('instagram_accounts').select('status').eq('user_id', userId).order('created_at', { ascending: true }).limit(1).maybeSingle();
+      if (!account || text((account as Row)['status']) !== 'connected') return { status: 'error', message: 'Reconecte o Instagram na tela Conexões antes de agendar.' };
+      const { data: changed, error } = await db.from('posts').update({ status: 'scheduled', scheduled_at: data.scheduledAt, attempts: 0, error: null })
+        .eq('id', data.postId).eq('user_id', userId).in('status', ['draft', 'scheduled']).select('id');
+      if (error) return { status: 'error', message: 'Não foi possível agendar agora. Tente de novo.' };
+      if (!changed?.length) return { status: 'error', message: 'Só dá para agendar rascunhos e publicações agendadas.' };
+      await log(db, userId, 'Publicação agendada', 'Agendada pelo usuário', { post_id: data.postId, scheduled_at: data.scheduledAt });
+      return { status: 'ok', message: 'Publicação agendada.' };
+    } catch { return { status: 'error', message: 'Não foi possível agendar agora. Tente de novo.' }; }
+  });

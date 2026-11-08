@@ -14,7 +14,7 @@ vi.mock('@/integrations/supabase/auth-middleware', () => ({ requireSupabaseAuth:
 vi.mock('@/integrations/supabase/client.server', () => ({ get supabaseAdmin() { return state.db; } }));
 
 import { FORMAT_RULES, checkSchedule, createPostSchema, kindOfMime, ownsMediaPath, validateMedia, zonedTimeToUtcIso } from '@/lib/posts';
-import { createManualPost, cancelPost, queuePostNow } from '@/lib/posts.functions';
+import { createManualPost, cancelPost, queuePostNow, schedulePostAt, updateDraftCaption } from '@/lib/posts.functions';
 
 const USER = '11111111-1111-4111-8111-111111111111';
 const OTHER = '22222222-2222-4222-8222-222222222222';
@@ -212,5 +212,38 @@ describe('queuePostNow', () => {
   it('refuses a post that cannot be sent now', async () => {
     const { run } = queue({ account: { status: 'connected' }, changed: [] });
     expect((await run()).status).toBe('error');
+  });
+});
+
+describe('approving and editing drafts', () => {
+  const call = (fn: unknown, options: Options, data: unknown) => {
+    const { db, calls } = fakeDb(options); state.db = db;
+    return { calls, run: () => (fn as (args: unknown) => Promise<{ status: string; message?: string }>)({ ...ctx, data }) };
+  };
+  const hour = () => new Date(Date.now() + 3_600_000).toISOString();
+  it('schedules a draft at the chosen time and resets its tries', async () => {
+    const { calls, run } = call(schedulePostAt, { account: { status: 'connected' }, changed: [{ id: PRODUCT }] }, { postId: PRODUCT, scheduledAt: hour() });
+    expect((await run()).status).toBe('ok');
+    const values = calls.updates.find(update => update.table === 'posts')?.values as Record<string, unknown>;
+    expect(values).toMatchObject({ status: 'scheduled', attempts: 0, error: null });
+  });
+  it('refuses a past time, a disconnected account and a post that is not a draft or scheduled', async () => {
+    const past = call(schedulePostAt, { account: { status: 'connected' }, changed: [{ id: PRODUCT }] }, { postId: PRODUCT, scheduledAt: new Date(Date.now() - 60_000).toISOString() });
+    expect((await past.run()).message).toMatch(/passou/); expect(past.calls.updates).toHaveLength(0);
+    const off = call(schedulePostAt, { account: { status: 'expired' }, changed: [{ id: PRODUCT }] }, { postId: PRODUCT, scheduledAt: hour() });
+    expect((await off.run()).message).toMatch(/Reconecte/);
+    const wrong = call(schedulePostAt, { account: { status: 'connected' }, changed: [] }, { postId: PRODUCT, scheduledAt: hour() });
+    expect((await wrong.run()).status).toBe('error');
+  });
+  it('saves the caption of a draft only', async () => {
+    const ok = call(updateDraftCaption, { changed: [{ id: PRODUCT }] }, { postId: PRODUCT, caption: ' Nova legenda ' });
+    expect((await ok.run()).status).toBe('ok');
+    expect(ok.calls.updates.find(update => update.table === 'posts')?.values).toEqual({ caption: 'Nova legenda' });
+    const notDraft = call(updateDraftCaption, { changed: [] }, { postId: PRODUCT, caption: 'x' });
+    expect((await notDraft.run()).message).toMatch(/rascunhos/);
+  });
+  it('rejects a caption above the Instagram limit', async () => {
+    const { run } = call(updateDraftCaption, { changed: [{ id: PRODUCT }] }, { postId: PRODUCT, caption: 'a'.repeat(2201) });
+    expect(() => run()).toThrow(); // the input check refuses it before anything is saved
   });
 });

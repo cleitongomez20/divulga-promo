@@ -2,13 +2,14 @@ import { createFileRoute, Link } from '@tanstack/react-router';
 import { useQuery, useQueryClient, useSuspenseQuery } from '@tanstack/react-query';
 import { useServerFn } from '@tanstack/react-start';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { ArrowDown, ArrowUp, CalendarClock, LoaderCircle, Send, Upload, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, CalendarClock, LoaderCircle, Pencil, Send, Sparkles, Upload, X } from 'lucide-react';
 import { WorkspaceShell } from '@/components/workspace-shell';
 import { Button } from '@/components/ui/button';
 import { supabase } from '@/integrations/supabase/client';
 import { pageHead } from '@/lib/metadata';
 import { workspaceQuery } from '@/lib/workspace-query';
-import { cancelPost, createManualPost, getPostsOverview, queuePostNow, type PostView } from '@/lib/posts.functions';
+import { cancelPost, createManualPost, getPostsOverview, queuePostNow, schedulePostAt, updateDraftCaption, type PostView } from '@/lib/posts.functions';
+import { generateContent } from '@/lib/brain.functions';
 import { HEARTBEAT_STALE_MS } from '@/lib/publishing';
 import { prepareFile, removeUploads, uploadPrepared } from '@/lib/media-upload';
 import { FORMAT_LABELS, FORMAT_RULES, MAX_CAPTION, POST_FORMATS, STATUS_LABELS, CANCELABLE_STATUSES, checkSchedule, formatInZone, validateMedia, zonedTimeToUtcIso, type PostFormat } from '@/lib/posts';
@@ -43,6 +44,11 @@ function PostsPage() {
   const create = useServerFn(createManualPost);
   const cancel = useServerFn(cancelPost);
   const queue = useServerFn(queuePostNow);
+  const generate = useServerFn(generateContent);
+  const saveCaption = useServerFn(updateDraftCaption);
+  const schedule = useServerFn(schedulePostAt);
+  const [editing, setEditing] = useState<{ id: string; text: string } | null>(null);
+  const [scheduling, setScheduling] = useState<{ id: string; when: string } | null>(null);
 
   const [format, setFormat] = useState<PostFormat>('reel');
   const [productId, setProductId] = useState('');
@@ -149,6 +155,42 @@ function PostsPage() {
     finally { setBusy(''); }
   }
 
+  async function generateOne() {
+    setBusy('O Claude está escolhendo o produto e escrevendo (pode levar até 30 segundos)...'); setMessage('');
+    try {
+      const result = await generate();
+      setMessage(result.message);
+      await queryClient.invalidateQueries({ queryKey: ['posts'] });
+    } catch { setMessage('Não foi possível gerar o conteúdo agora. Tente de novo.'); }
+    finally { setBusy(''); }
+  }
+  async function saveEdit() {
+    if (!editing) return;
+    setBusy('Salvando legenda...'); setMessage('');
+    try {
+      const result = await saveCaption({ data: { postId: editing.id, caption: editing.text } });
+      setMessage(result.status === 'ok' ? (result.message ?? 'Legenda salva.') : result.message);
+      if (result.status === 'ok') setEditing(null);
+      await queryClient.invalidateQueries({ queryKey: ['posts'] });
+    } catch { setMessage('Não foi possível salvar a legenda agora. Tente de novo.'); }
+    finally { setBusy(''); }
+  }
+  async function confirmSchedule() {
+    if (!scheduling) return;
+    const at = scheduling.when ? zonedTimeToUtcIso(scheduling.when, timezone) : null;
+    const problem = at ? checkSchedule(at) : 'Escolha a data e a hora da publicação.';
+    if (problem || !at) { setMessage(problem ?? 'Escolha a data e a hora da publicação.'); return; }
+    setBusy('Agendando...'); setMessage('');
+    try {
+      const result = await schedule({ data: { postId: scheduling.id, scheduledAt: at } });
+      setMessage(result.status === 'ok' ? (result.message ?? 'Publicação agendada.') : result.message);
+      if (result.status === 'ok') setScheduling(null);
+      await queryClient.invalidateQueries({ queryKey: ['posts'] });
+    } catch { setMessage('Não foi possível agendar agora. Tente de novo.'); }
+    finally { setBusy(''); }
+  }
+
+  const formBusy = busy.startsWith('O Claude') ? '' : busy;
   const waiting = overview?.posts.some(post => post.status === 'scheduled') ?? false;
   const lastVisit = overview?.scheduler.lastVisitAt ? Date.parse(overview.scheduler.lastVisitAt) : null;
   const schedulerSilent = waiting && (lastVisit === null || Date.now() - lastVisit > HEARTBEAT_STALE_MS);
@@ -162,6 +204,14 @@ function PostsPage() {
     {overview?.account && !connected && <div role="status" className="mt-6 border-l-4 border-primary bg-accent p-4 text-sm font-medium text-accent-foreground">A conexão com o Instagram precisa ser refeita na tela <Link to="/conexoes" className="underline">Conexões</Link>.</div>}
     {schedulerSilent && <div role="status" className="mt-6 border-l-4 border-primary bg-accent p-4 text-sm font-medium text-accent-foreground">O agendador não visitou o app nos últimos minutos, então as publicações agendadas não vão sair. Confira se o trabalho no cron-job.org está ativo.</div>}
     {isError && <p role="status" className="mt-6 text-sm font-medium">Não foi possível carregar suas publicações. Atualize a página.</p>}
+
+    <section className="mt-8 rounded-lg border bg-card p-5" aria-labelledby="ai-title">
+      <div className="flex items-center gap-3"><Sparkles className="size-6 text-primary" /><h2 id="ai-title" className="text-lg font-semibold">Gerar com o Claude</h2></div>
+      <p className="mt-2 text-sm text-muted-foreground">O Claude escolhe um dos produtos que você já buscou, escreve a legenda e cria um rascunho com a foto do produto. Você revisa, edita e aprova antes de qualquer coisa ser publicada.</p>
+      {overview && !overview.ai.connected && <p className="mt-3 text-sm font-medium">Conecte o Claude na tela <Link to="/conexoes" className="underline">Conexões</Link> para usar.</p>}
+      <Button type="button" className="mt-4 h-11" disabled={Boolean(busy) || !overview?.ai.connected || !overview?.account} onClick={() => void generateOne()}>{busy.startsWith('O Claude') ? <LoaderCircle className="animate-spin" /> : <Sparkles />}Gerar conteúdo com o Claude</Button>
+      {busy.startsWith('O Claude') && <p role="status" className="mt-3 text-sm text-muted-foreground">{busy}</p>}
+    </section>
 
     <form onSubmit={submit} className="mt-8 rounded-lg border bg-card p-5">
       <h2 className="text-lg font-semibold">Nova publicação</h2>
@@ -203,7 +253,7 @@ function PostsPage() {
       </fieldset>
 
       {message && <p role="status" className="mt-5 text-sm font-medium">{message}</p>}
-      <Button type="submit" disabled={Boolean(busy) || !connected} className="mt-5 h-11">{busy ? <LoaderCircle className="animate-spin" /> : mode === 'schedule' ? <CalendarClock /> : <Upload />}{busy || (mode === 'schedule' ? 'Agendar publicação' : 'Salvar rascunho')}</Button>
+      <Button type="submit" disabled={Boolean(busy) || !connected} className="mt-5 h-11">{formBusy ? <LoaderCircle className="animate-spin" /> : mode === 'schedule' ? <CalendarClock /> : <Upload />}{formBusy || (mode === 'schedule' ? 'Agendar publicação' : 'Salvar rascunho')}</Button>
     </form>
 
     <h2 className="mt-10 text-lg font-semibold">Suas publicações</h2>
@@ -213,13 +263,20 @@ function PostsPage() {
       <div className="flex flex-wrap items-center gap-2"><span className="text-sm font-semibold">{FORMAT_LABELS[post.format as PostFormat] ?? post.format}</span><span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${STATUS_STYLE[post.status] ?? 'bg-muted text-muted-foreground'}`}>{STATUS_LABELS[post.status] ?? post.status}</span>
         {post.scheduledAt && <span className="text-xs text-muted-foreground">{post.status === 'published' && post.publishedAt ? `Publicada em ${formatInZone(post.publishedAt, timezone)}` : `Para ${formatInZone(post.scheduledAt, timezone)}`}</span>}</div>
       <p className="mt-2 line-clamp-2 text-sm">{post.productTitle}</p>
-      {post.caption && <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{post.caption}</p>}
+      {post.source === 'ai' && post.aiPlan && <div className="mt-2 rounded-md bg-accent p-3 text-xs text-accent-foreground"><p className="flex items-center gap-1.5 font-semibold"><Sparkles className="size-3.5" />Criado pelo Claude{post.aiPlan.angle ? `: ${post.aiPlan.angle}` : ''}</p>{post.aiPlan.reason && <p className="mt-1">Por que este produto: {post.aiPlan.reason}</p>}{post.aiPlan.linkMissing && <p className="mt-1 font-medium">Ainda sem link de afiliado. Conecte a Shopee e gere de novo antes de publicar.</p>}</div>}
+      {editing?.id === post.id
+        ? <div className="mt-2"><label className="form-label" htmlFor={`caption-${post.id}`}>Legenda</label><textarea id={`caption-${post.id}`} className="field min-h-48" maxLength={MAX_CAPTION} value={editing.text} onChange={e => setEditing({ id: post.id, text: e.target.value })} /><p className="mt-1 text-right text-xs text-muted-foreground">{editing.text.length}/{MAX_CAPTION}</p>
+          <div className="mt-2 flex flex-wrap gap-2"><Button type="button" size="sm" className="min-h-11" disabled={Boolean(busy)} onClick={() => void saveEdit()}>Salvar legenda</Button><Button type="button" variant="outline" size="sm" className="min-h-11" disabled={Boolean(busy)} onClick={() => setEditing(null)}>Cancelar</Button></div></div>
+        : post.caption && <p className={`mt-1 text-xs text-muted-foreground ${post.status === 'draft' ? 'whitespace-pre-line' : 'line-clamp-2'}`}>{post.caption}</p>}
       {post.error && <p className={`mt-1 text-xs font-medium ${post.status === 'failed' ? 'text-destructive' : 'text-muted-foreground'}`}>{post.status === 'failed' ? post.error : `Aviso: ${post.error}`}</p>}
       {post.media.length > 0 && <div className="mt-3 flex flex-wrap gap-2">{post.media.slice(0, 5).map((media, index) => <div key={index} className="size-16 overflow-hidden rounded bg-muted">{media.kind === 'image' ? <img src={media.url} alt="" loading="lazy" className="size-full object-cover" /> : <video src={media.url} muted playsInline preload="metadata" className="size-full object-cover" />}</div>)}{post.media.length > 5 && <span className="self-center text-xs text-muted-foreground">+{post.media.length - 5}</span>}</div>}
       <div className="mt-3 flex flex-wrap gap-2">
+        {post.status === 'draft' && editing?.id !== post.id && <Button type="button" variant="outline" size="sm" className="min-h-11" disabled={Boolean(busy)} onClick={() => setEditing({ id: post.id, text: post.caption })}><Pencil />Editar legenda</Button>}
+        {['draft', 'scheduled'].includes(post.status) && <Button type="button" variant="outline" size="sm" className="min-h-11" disabled={Boolean(busy) || !connected} onClick={() => setScheduling(scheduling?.id === post.id ? null : { id: post.id, when: '' })}><CalendarClock />Agendar</Button>}
         {['draft', 'scheduled', 'failed'].includes(post.status) && <Button type="button" size="sm" className="min-h-11" disabled={Boolean(busy) || !connected} onClick={() => void sendNow(post)}><Send />{post.status === 'failed' ? 'Tentar de novo' : 'Publicar agora'}</Button>}
         {(CANCELABLE_STATUSES as readonly string[]).includes(post.status) && <Button type="button" variant="outline" size="sm" className="min-h-11" disabled={Boolean(busy)} onClick={() => void cancelOne(post)}>Cancelar</Button>}
       </div>
+      {scheduling?.id === post.id && <div className="mt-3 flex flex-wrap items-end gap-2"><div><label className="form-label" htmlFor={`when-${post.id}`}>Data e hora (fuso da sua conta)</label><input id={`when-${post.id}`} type="datetime-local" className="field" value={scheduling.when} onChange={e => setScheduling({ id: post.id, when: e.target.value })} /></div><Button type="button" size="sm" className="min-h-11" disabled={Boolean(busy)} onClick={() => void confirmSchedule()}>Confirmar agendamento</Button></div>}
     </li>)}</ul>}
   </WorkspaceShell>;
 }
