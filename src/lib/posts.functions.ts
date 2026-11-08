@@ -4,7 +4,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { requireSupabaseAuth } from '@/integrations/supabase/auth-middleware';
 import { HEARTBEAT_SCOPE } from './publishing';
 import {
-  CANCELABLE_STATUSES, FORMAT_LABELS, MAX_FILE_BYTES, MEDIA_BUCKET, checkSchedule, createPostSchema, kindOfMime, mimeOfExtension, ownsMediaPath, validateMedia,
+  CANCELABLE_STATUSES, FORMAT_LABELS, MAX_CAPTION, MAX_FILE_BYTES, MEDIA_BUCKET, checkSchedule, createPostSchema, kindOfMime, mimeOfExtension, ownsMediaPath, validateMedia,
   type MediaKind,
 } from './posts';
 
