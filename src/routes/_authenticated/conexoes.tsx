@@ -5,6 +5,7 @@ import { useState, type FormEvent } from 'react';
 import { ShoppingBag, Save, PlugZap, Trash2, RefreshCw, LoaderCircle, FlaskConical, Stethoscope } from 'lucide-react';
 import { WorkspaceShell } from '@/components/workspace-shell';
 import { InstagramCard } from '@/components/instagram-card';
+import { ClaudeCard } from '@/components/claude-card';
 import { Button } from '@/components/ui/button';
 import { PasswordInput } from '@/components/password-input';
 import { pageHead } from '@/lib/metadata';
@@ -53,6 +54,7 @@ function ConnectionsPage() {
         {steps.length > 0 && <ol className="mt-4 space-y-3 border-t pt-4 text-sm">{steps.map(st => <li key={st.step}><p className="font-semibold">{st.ok ? '✓' : '✗'} {st.step} <span className="font-normal text-muted-foreground">({st.elapsedMs} ms{st.httpStatus ? ` · HTTP ${st.httpStatus}` : ''})</span></p><pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words rounded bg-muted p-2 text-xs">{st.summary}</pre></li>)}</ol>}
       </section>
       <InstagramCard />
+      <ClaudeCard />
     </div>
   </WorkspaceShell>;
 }
