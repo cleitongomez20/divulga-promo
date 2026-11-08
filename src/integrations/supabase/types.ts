@@ -44,6 +44,89 @@ export type Database = {
         }
         Relationships: []
       }
+      ai_connections: {
+        Row: {
+          created_at: string
+          credential_id: string | null
+          id: string
+          last_error: string | null
+          last_tested_at: string | null
+          model: string
+          monthly_cap_cents: number
+          provider: string
+          status: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          credential_id?: string | null
+          id?: string
+          last_error?: string | null
+          last_tested_at?: string | null
+          model?: string
+          monthly_cap_cents?: number
+          provider?: string
+          status?: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          credential_id?: string | null
+          id?: string
+          last_error?: string | null
+          last_tested_at?: string | null
+          model?: string
+          monthly_cap_cents?: number
+          provider?: string
+          status?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "ai_connections_credential_id_fkey"
+            columns: ["credential_id"]
+            isOneToOne: false
+            referencedRelation: "connector_secrets"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      ai_usage: {
+        Row: {
+          cost_micros: number
+          created_at: string
+          id: string
+          input_tokens: number
+          model: string
+          output_tokens: number
+          purpose: string
+          user_id: string
+        }
+        Insert: {
+          cost_micros?: number
+          created_at?: string
+          id?: string
+          input_tokens?: number
+          model: string
+          output_tokens?: number
+          purpose: string
+          user_id: string
+        }
+        Update: {
+          cost_micros?: number
+          created_at?: string
+          id?: string
+          input_tokens?: number
+          model?: string
+          output_tokens?: number
+          purpose?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       bio_links: {
         Row: {
           bio_page_id: string
@@ -602,9 +685,55 @@ export type Database = {
         }
         Relationships: []
       }
+      post_media: {
+        Row: {
+          asset_id: string
+          created_at: string
+          id: string
+          position: number
+          post_id: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          asset_id: string
+          created_at?: string
+          id?: string
+          position?: number
+          post_id: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          asset_id?: string
+          created_at?: string
+          id?: string
+          position?: number
+          post_id?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "post_media_asset_id_fkey"
+            columns: ["asset_id"]
+            isOneToOne: false
+            referencedRelation: "video_assets"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "post_media_post_id_fkey"
+            columns: ["post_id"]
+            isOneToOne: false
+            referencedRelation: "posts"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       posts: {
         Row: {
           affiliate_link: string | null
+          ai_plan: Json | null
           attempts: number
           caption: string | null
           created_at: string
@@ -616,9 +745,11 @@ export type Database = {
           instagram_account_id: string
           parent_post_id: string | null
           product_id: string
+          publish_state: Json | null
           published_at: string | null
           scheduled_at: string | null
           search_profile_id: string | null
+          source: string
           status: string
           sub_id: string | null
           trigger_word: string | null
@@ -628,6 +759,7 @@ export type Database = {
         }
         Insert: {
           affiliate_link?: string | null
+          ai_plan?: Json | null
           attempts?: number
           caption?: string | null
           created_at?: string
@@ -639,9 +771,11 @@ export type Database = {
           instagram_account_id: string
           parent_post_id?: string | null
           product_id: string
+          publish_state?: Json | null
           published_at?: string | null
           scheduled_at?: string | null
           search_profile_id?: string | null
+          source?: string
           status?: string
           sub_id?: string | null
           trigger_word?: string | null
@@ -651,6 +785,7 @@ export type Database = {
         }
         Update: {
           affiliate_link?: string | null
+          ai_plan?: Json | null
           attempts?: number
           caption?: string | null
           created_at?: string
@@ -662,9 +797,11 @@ export type Database = {
           instagram_account_id?: string
           parent_post_id?: string | null
           product_id?: string
+          publish_state?: Json | null
           published_at?: string | null
           scheduled_at?: string | null
           search_profile_id?: string | null
+          source?: string
           status?: string
           sub_id?: string | null
           trigger_word?: string | null
@@ -1029,7 +1166,11 @@ export type Database = {
           duration_seconds: number | null
           id: string
           instagram_account_id: string | null
+          media_type: string
+          mime_type: string | null
           provider_job_id: string | null
+          size_bytes: number | null
+          source: string
           storage_path: string | null
           template: string | null
           updated_at: string
@@ -1040,7 +1181,11 @@ export type Database = {
           duration_seconds?: number | null
           id?: string
           instagram_account_id?: string | null
+          media_type?: string
+          mime_type?: string | null
           provider_job_id?: string | null
+          size_bytes?: number | null
+          source?: string
           storage_path?: string | null
           template?: string | null
           updated_at?: string
@@ -1051,7 +1196,11 @@ export type Database = {
           duration_seconds?: number | null
           id?: string
           instagram_account_id?: string | null
+          media_type?: string
+          mime_type?: string | null
           provider_job_id?: string | null
+          size_bytes?: number | null
+          source?: string
           storage_path?: string | null
           template?: string | null
           updated_at?: string
