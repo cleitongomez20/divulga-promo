@@ -104,7 +104,7 @@ export const createManualPost = createServerFn({ method: 'POST' }).middleware([r
       if (data.media.some(item => !ownsMediaPath(item.path, userId))) return { status: 'error', message: 'Esses arquivos não pertencem à sua conta. Envie de novo.' };
 
       const { data: account } = await db.from('instagram_accounts').select('id,status').eq('user_id', userId).order('created_at', { ascending: true }).limit(1).maybeSingle();
-      if (!account) return { status: 'error', message: 'Conecte o Instagram na tela Conexões antes de criar publicações.' };
+      if (!account || text((account as Row)['status']) === 'disconnected') return { status: 'error', message: 'Conecte o Instagram na tela Conexões antes de criar publicações.' };
       const { data: product } = await db.from('products').select('id').eq('user_id', userId).eq('id', data.productId).maybeSingle();
       if (!product) return { status: 'error', message: 'Não encontrei esse produto. Escolha outro da lista.' };
 

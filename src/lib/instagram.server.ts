@@ -222,7 +222,8 @@ export async function removeAppCredentials(admin: Admin, userId: string) {
 
 export async function loadAccount(admin: Admin, userId: string) {
   const row = await accountRow(admin, userId);
-  return row ? { username: row.username, igUserId: row.ig_user_id, pageId: row.page_id, status: row.status } : null;
+  // A disconnected row is only kept for the history of posts; for the connection screen there is no account.
+  return row && row.status !== 'disconnected' ? { username: row.username, igUserId: row.ig_user_id, pageId: row.page_id, status: row.status } : null;
 }
 export async function saveConnectedAccount(admin: Admin, userId: string, masterKey: string, p: { igUserId: string; username: string | null; pageId: string | null; token: string; issuedAt: number; expiresAt: number | null }) {
   const secretId = await insertSecret(admin, userId, masterKey, TOKEN_PURPOSE, { accessToken: p.token, issuedAt: p.issuedAt, expiresAt: p.expiresAt } satisfies StoredToken);
@@ -234,10 +235,17 @@ export async function saveConnectedAccount(admin: Admin, userId: string, masterK
   if (error) { await dropSecret(admin, userId, secretId); throw new InstagramError('salvar', { step: 'guardar_conta' }); }
   await dropSecret(admin, userId, existing?.credential_id ?? null);
 }
+/**
+ * Posts, media and bio pages point at the account row (foreign keys without cascade), so the row cannot be deleted once the
+ * user has any of them. Disconnecting therefore keeps the row (and its history) and only clears the access: the token is
+ * detached and destroyed, and the status becomes "disconnected". Connecting again reuses the same row.
+ */
 export async function disconnectAccount(admin: Admin, userId: string) {
   const row = await accountRow(admin, userId);
   if (!row) return;
-  await admin.from('instagram_accounts').delete().eq('id', row.id).eq('user_id', userId);
+  const { error } = await admin.from('instagram_accounts')
+    .update({ credential_id: null, ig_user_id: null, token_expires_at: null, status: 'disconnected' }).eq('id', row.id).eq('user_id', userId);
+  if (error) throw new InstagramError('salvar', { step: 'desconectar' });
   await dropSecret(admin, userId, row.credential_id);
 }
 
