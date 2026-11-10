@@ -238,7 +238,10 @@ describe('connecting the account', () => {
     expect(db.tables['instagram_accounts']).toHaveLength(1);
     expect(db.tables['connector_secrets']).toHaveLength(2);
     await disconnectAccount(db.admin, USER);
-    expect(db.tables['instagram_accounts']).toHaveLength(0);
+    // The row stays (posts reference it); only the access is cleared.
+    expect(db.tables['instagram_accounts']).toHaveLength(1);
+    expect(db.tables['instagram_accounts']![0]).toMatchObject({ status: 'disconnected', credential_id: null });
+    expect(await loadAccount(db.admin, USER)).toBeNull();
     expect(db.tables['connector_secrets']).toHaveLength(1);
     await removeAppCredentials(db.admin, USER);
     expect(db.tables['connector_secrets']).toHaveLength(0);
