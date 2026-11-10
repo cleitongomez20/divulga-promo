@@ -22,6 +22,7 @@ export function InstagramCard() {
   const [ownToken, setOwnToken] = useState('');
   const [ownId, setOwnId] = useState('');
   const [editing, setEditing] = useState(false);
+  const [switching, setSwitching] = useState(false);
   const [busy, setBusy] = useState('');
   const [notice, setNotice] = useState('');
 
@@ -69,7 +70,7 @@ export function InstagramCard() {
 
   const account = status?.account ?? null;
   const secretSaved = Boolean(status?.appConfigured);
-  const needsConnect = !account || account.expired;
+  const needsConnect = !account || account.expired || switching;
   const showSecretForm = Boolean(status) && needsConnect && (!secretSaved || editing);
   const label = account ? (account.expired ? 'Precisa conectar de novo' : 'Conectado') : 'Pronto para conectar';
 
@@ -111,8 +112,10 @@ export function InstagramCard() {
     </form>}
 
     {status && <div className="mt-6 flex flex-wrap gap-2">
+      {account && !account.expired && !switching && <Button variant="outline" className="min-h-11" onClick={() => setSwitching(true)} disabled={busy !== ''}>Trocar conta</Button>}
+      {switching && <Button variant="ghost" className="min-h-11" onClick={() => setSwitching(false)} disabled={busy !== ''}>Cancelar troca</Button>}
       {account && !account.expired && <Button variant="outline" className="min-h-11" onClick={() => void act('check', () => check())} disabled={busy !== ''}>{busy === 'check' ? <LoaderCircle className="animate-spin" /> : <Stethoscope />}Testar conexão</Button>}
-      {account && <Button variant="outline" className="min-h-11" onClick={() => void act('disconnect', () => disconnect())} disabled={busy !== ''}>{busy === 'disconnect' ? <LoaderCircle className="animate-spin" /> : <Trash2 />}Desconectar</Button>}
+      {account && <Button variant="outline" className="min-h-11" onClick={() => void act('disconnect', () => disconnect()).then(() => setSwitching(false))} disabled={busy !== ''}>{busy === 'disconnect' ? <LoaderCircle className="animate-spin" /> : <Trash2 />}Desconectar</Button>}
       {secretSaved && needsConnect && !editing && <Button variant="ghost" className="min-h-11" onClick={() => setEditing(true)} disabled={busy !== ''}>Trocar chave secreta</Button>}
       {secretSaved && needsConnect && <Button variant="ghost" className="min-h-11" onClick={() => void act('removeApp', () => removeApp())} disabled={busy !== ''}>Remover chave</Button>}
     </div>}
