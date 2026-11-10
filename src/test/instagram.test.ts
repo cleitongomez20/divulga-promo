@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   InstagramError, signState, verifyState, buildAuthorizeUrl, exchangeCode, fetchGrantedPermissions, discoverAssignedAccounts, verifyAccount,
-  completeInstagramLogin, connectOwnAccount, discoverByIntrospection, saveAppCredentials, loadAppCredentials, removeAppCredentials, getPublishingToken, checkAccount, loadAccount, disconnectAccount, saveConnectedAccount,
+  completeInstagramLogin, connectOwnAccount, discoverByIntrospection, saveAppCredentials, loadAppCredentials, removeAppCredentials, getPublishingToken, checkAccount, loadAccount, disconnectAccount, saveConnectedAccount, loadPendingAccounts, completeChosenAccount,
 } from '@/lib/instagram.server';
 import { instagramAppSchema, instagramSecretSchema, ownAccountSchema, instagramErrorMessage, maskId, REQUIRED_PERMISSIONS, CALLBACK_URL, META_APP_ID, META_CONFIG_ID } from '@/lib/instagram';
 import { sealJson, openJson } from '@/lib/secret-box.server';
@@ -226,6 +226,18 @@ describe('connecting the account', () => {
     expect(tried.slice(0, 2)).toMatchObject([{ step: 'contas_atribuidas', status: 400, meta: { code: 200 } }, { step: 'contas_atribuidas', status: 400 }]);
     expect(lastLog(db).details).toMatchObject({ codigo_trocado: true });
     expect(await loadAccount(db.admin, USER)).toBeNull();
+  });
+  it('asks the user to choose when the login brings several accounts, and connects only the chosen one', async () => {
+    const db = fakeAdmin(); await saveAppCredentials(db.admin, USER, KEY, APP);
+    const two = meta({ accounts: [{ id: '11892348217875', username: '_cleitosantos_' }, { id: '1382402184965193', username: 'achad.inhosdodiia' }] });
+    expect(await login(db, two)).toEqual({ ok: 'choose' });
+    expect(await loadAccount(db.admin, USER)).toBeNull();
+    expect(await loadPendingAccounts(db.admin, USER, KEY)).toHaveLength(2);
+    const done = await completeChosenAccount({ admin: db.admin, userId: USER, masterKey: KEY, igUserId: '1382402184965193', fetcher: two });
+    expect(done.ok).toBe(true);
+    expect((await loadAccount(db.admin, USER))?.igUserId).toBe('1382402184965193');
+    expect(await loadPendingAccounts(db.admin, USER, KEY)).toBeNull();
+    expect(db.tables['connector_secrets']).toHaveLength(2);
   });
   it('still connects when listing permissions fails, because the account search proves the access', async () => {
     const db = fakeAdmin(); await saveAppCredentials(db.admin, USER, KEY, APP);
