@@ -1,10 +1,12 @@
 import { createServerFn } from '@tanstack/react-start';
 import { requireSupabaseAuth } from '@/integrations/supabase/auth-middleware';
-import { CALLBACK_URL, META_APP_ID, META_CONFIG_ID, instagramSecretSchema, ownAccountSchema, instagramErrorMessage } from './instagram';
+import { CALLBACK_URL, META_APP_ID, META_CONFIG_ID, chooseAccountSchema, instagramSecretSchema, ownAccountSchema, instagramErrorMessage } from './instagram';
 
 export type InstagramStatus = {
   appConfigured: boolean; redirectUri: string;
   account: { username: string | null; expired: boolean } | null;
+  /** Accounts that came with the last login and wait for the user to pick one. */
+  choices: { igUserId: string; username: string | null }[];
 };
 export type ActionResult = { status: 'ok'; message?: string } | { status: 'error'; message: string };
 
@@ -33,7 +35,8 @@ export const getInstagramStatus = createServerFn({ method: 'GET' }).middleware([
   let appConfigured = false;
   if (key) { try { appConfigured = (await server.loadAppCredentials(db, context.userId, key)) !== null; } catch { appConfigured = false; } }
   const account = await server.loadAccount(db, context.userId);
-  return { appConfigured, redirectUri: CALLBACK_URL, account: account ? { username: account.username, expired: account.status === 'expired' } : null };
+  const choices = key ? await server.loadPendingAccounts(db, context.userId, key).catch(() => null) : null;
+  return { appConfigured, redirectUri: CALLBACK_URL, account: account ? { username: account.username, expired: account.status === 'expired' } : null, choices: choices ?? [] };
 });
 
 /** The app id and the login configuration are fixed in the code; only the secret key is typed and kept sealed. */
@@ -106,5 +109,25 @@ export const removeInstagramApp = createServerFn({ method: 'POST' }).middleware(
     await removeAppCredentials(db, context.userId);
     await db.from('activity_log').insert({ user_id: context.userId, action: 'App da Meta removido', result: 'Dados do app removidos', details: {} });
     return { status: 'ok', message: 'Dados do app removidos.' };
+  } catch (error) { return failure(error); }
+});
+export const chooseInstagramAccount = createServerFn({ method: 'POST' }).middleware([requireSupabaseAuth])
+  .inputValidator(input => chooseAccountSchema.parse(input)).handler(async ({ context, data }): Promise<ActionResult> => {
+    try {
+      const db = await admin();
+      if (await tooSoon(db, context.userId)) return { status: 'error', message: 'Aguarde alguns segundos e tente de novo.' };
+      const { completeChosenAccount } = await import('./instagram.server');
+      const result = await completeChosenAccount({ admin: db, userId: context.userId, masterKey: masterKey(), igUserId: data.igUserId });
+      if (!result.ok) return { status: 'error', message: instagramErrorMessage(result.code) };
+      return { status: 'ok', message: result.username ? `Conta @${result.username} conectada.` : 'Conta conectada.' };
+    } catch (error) { return failure(error); }
+  });
+
+export const cancelInstagramChoice = createServerFn({ method: 'POST' }).middleware([requireSupabaseAuth]).handler(async ({ context }): Promise<ActionResult> => {
+  try {
+    const db = await admin();
+    const { clearPendingChoice } = await import('./instagram.server');
+    await clearPendingChoice(db, context.userId);
+    return { status: 'ok' };
   } catch (error) { return failure(error); }
 });

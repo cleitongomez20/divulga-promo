@@ -9,6 +9,7 @@ const encoder = new TextEncoder();
 const GRAPH = `https://graph.facebook.com/${GRAPH_VERSION}`;
 const APP_PURPOSE = 'instagram-app';
 const TOKEN_PURPOSE = 'instagram-token';
+const PENDING_PURPOSE = 'instagram-pending';
 
 export type MetaError = { code: number | null; subcode: number | null; type: string | null; message: string | null };
 /** Safe details about a failure (never a token or a secret), kept in the history to explain what happened. */
@@ -214,10 +215,62 @@ export async function saveAppCredentials(admin: Admin, userId: string, masterKey
 }
 export async function removeAppCredentials(admin: Admin, userId: string) {
   await disconnectAccount(admin, userId);
+  await clearPendingChoice(admin, userId);
   const existing = await appRow(admin, userId);
   if (!existing) return;
   await admin.from('marketplace_connections').delete().eq('id', existing.id).eq('user_id', userId);
   await dropSecret(admin, userId, existing.credential_id);
+}
+
+// ---- several accounts came with the login: keep the token sealed until the user says which one to use ----
+type PendingChoice = { accessToken: string; accounts: SharedAccount[]; issuedAt: number };
+async function pendingRow(admin: Admin, userId: string) {
+  const { data } = await admin.from('marketplace_connections').select('id,credential_id').eq('user_id', userId).eq('marketplace', 'instagram_pending').maybeSingle();
+  return data;
+}
+export async function savePendingChoice(admin: Admin, userId: string, masterKey: string, value: PendingChoice) {
+  const secretId = await insertSecret(admin, userId, masterKey, PENDING_PURPOSE, value);
+  const existing = await pendingRow(admin, userId);
+  const { error } = existing
+    ? await admin.from('marketplace_connections').update({ credential_id: secretId, status: 'configured' }).eq('id', existing.id).eq('user_id', userId)
+    : await admin.from('marketplace_connections').insert({ user_id: userId, marketplace: 'instagram_pending', status: 'configured', credential_id: secretId });
+  if (error) { await dropSecret(admin, userId, secretId); throw new InstagramError('salvar', { step: 'guardar_escolha' }); }
+  await dropSecret(admin, userId, existing?.credential_id ?? null);
+}
+export async function clearPendingChoice(admin: Admin, userId: string) {
+  const existing = await pendingRow(admin, userId);
+  if (!existing) return;
+  await admin.from('marketplace_connections').delete().eq('id', existing.id).eq('user_id', userId);
+  await dropSecret(admin, userId, existing.credential_id);
+}
+/** The accounts waiting for a choice (ids and names only; the token never leaves the server). Valid for 15 minutes. */
+export async function loadPendingAccounts(admin: Admin, userId: string, masterKey: string, now = Date.now()): Promise<SharedAccount[] | null> {
+  const row = await pendingRow(admin, userId);
+  if (!row?.credential_id) return null;
+  const { data } = await admin.from('connector_secrets').select('ciphertext').eq('id', row.credential_id).eq('user_id', userId).maybeSingle();
+  if (!data) return null;
+  const pending = await openJson<Partial<PendingChoice>>(data.ciphertext, masterKey, userId, PENDING_PURPOSE).catch(() => null);
+  if (!pending?.accessToken || !Array.isArray(pending.accounts) || typeof pending.issuedAt !== 'number' || now - pending.issuedAt > 15 * 60_000) return null;
+  return pending.accounts;
+}
+export async function completeChosenAccount(p: { admin: Admin; userId: string; masterKey: string; igUserId: string; fetcher?: Fetcher; now?: number }): Promise<{ ok: true; username: string | null } | { ok: false; code: InstagramErrorCode }> {
+  const fetcher = p.fetcher ?? fetch; const now = p.now ?? Date.now();
+  try {
+    const row = await pendingRow(p.admin, p.userId);
+    if (!row?.credential_id) return { ok: false, code: 'estado' };
+    const { data } = await p.admin.from('connector_secrets').select('ciphertext').eq('id', row.credential_id).eq('user_id', p.userId).maybeSingle();
+    if (!data) return { ok: false, code: 'estado' };
+    const pending = await openJson<PendingChoice>(data.ciphertext, p.masterKey, p.userId, PENDING_PURPOSE);
+    if (now - pending.issuedAt > 15 * 60_000) { await clearPendingChoice(p.admin, p.userId); return { ok: false, code: 'estado' }; }
+    const chosen = pending.accounts.find(account => account.igUserId === p.igUserId);
+    if (!chosen) return { ok: false, code: 'conta' };
+    const verified = await verifyAccount(fetcher, pending.accessToken, chosen.igUserId).catch(() => ({ username: null }));
+    const username = verified.username ?? chosen.username;
+    await saveConnectedAccount(p.admin, p.userId, p.masterKey, { igUserId: chosen.igUserId, username, pageId: null, token: pending.accessToken, issuedAt: now, expiresAt: null });
+    await clearPendingChoice(p.admin, p.userId);
+    await p.admin.from('activity_log').insert({ user_id: p.userId, action: 'Conexão com o Instagram', result: 'Conta conectada', details: { escolhida: true, usuario: username } as Json });
+    return { ok: true, username };
+  } catch (error) { return { ok: false, code: error instanceof InstagramError ? error.code : 'salvar' }; }
 }
 
 export async function loadAccount(admin: Admin, userId: string) {
@@ -281,7 +334,7 @@ export async function checkAccount(admin: Admin, userId: string, masterKey: stri
 }
 
 /** Everything that happens when the user comes back from the login window. Each step leaves safe details in the history. */
-export async function completeInstagramLogin(p: { admin: Admin; userId: string; masterKey: string; code: string; redirectUri: string; fetcher?: Fetcher; now?: number }): Promise<{ ok: true } | { ok: false; code: InstagramErrorCode }> {
+export async function completeInstagramLogin(p: { admin: Admin; userId: string; masterKey: string; code: string; redirectUri: string; fetcher?: Fetcher; now?: number }): Promise<{ ok: true } | { ok: 'choose' } | { ok: false; code: InstagramErrorCode }> {
   const fetcher = p.fetcher ?? fetch; const now = p.now ?? Date.now();
   const diagnostics: Record<string, unknown> = {};
   const record = (result: string) => p.admin.from('activity_log').insert({ user_id: p.userId, action: 'Conexão com o Instagram', result, details: diagnostics as Json });
@@ -309,6 +362,12 @@ export async function completeInstagramLogin(p: { admin: Admin; userId: string; 
       if (found.via) diagnostics['achada_por'] = found.via;
     }
     diagnostics['tentativas'] = tries; diagnostics['contas_compartilhadas'] = accounts.length;
+    // More than one account came with the login (earlier shares stay listed): the user picks, the app does not guess.
+    if (accounts.length > 1) {
+      await savePendingChoice(p.admin, p.userId, p.masterKey, { accessToken: token, accounts, issuedAt: now });
+      await record('Aguardando a escolha da conta');
+      return { ok: 'choose' };
+    }
     const chosen: SharedAccount | null = accounts[0] ?? null;
     if (!chosen) {
       const failed = tries.every(attempt => attempt.status !== undefined || attempt.network);

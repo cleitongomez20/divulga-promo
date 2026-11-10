@@ -27,6 +27,8 @@ export const ownAccountSchema = z.object({
   igUserId: z.string().trim().regex(/^(17841\d{10,14})?$/, 'O ID da conta do Instagram tem só números e começa com 17841 (é o ID que aparece no Meta Business Suite, não o do portfólio).').default(''),
 });
 
+export const chooseAccountSchema = z.object({ igUserId: z.string().trim().regex(/^\d{5,25}$/, 'Escolha uma conta da lista.') });
+
 export type InstagramErrorCode = 'token_sem_conta' | 'conta' | 'negado' | 'estado' | 'app' | 'troca' | 'permissao' | 'sem_instagram' | 'perfil' | 'expirado' | 'salvar';
 const MESSAGES: Record<InstagramErrorCode, string> = {
   token_sem_conta: 'Esse token não listou nenhuma conta do Instagram. Confira se a conta foi atribuída ao usuário do sistema junto com o app Divulga Promo, ou informe o ID da conta (começa com 17841) no campo opcional.',
