@@ -19,6 +19,7 @@ export const Route = createFileRoute('/api/public/instagram-callback')({
         if (!code) return back('instagram=erro&motivo=troca');
         const { supabaseAdmin } = await import('@/integrations/supabase/client.server');
         const result = await completeInstagramLogin({ admin: supabaseAdmin, userId, masterKey, code, redirectUri: CALLBACK_URL });
+        if (result.ok === 'choose') return back('instagram=escolher');
         return back(result.ok ? 'instagram=ok' : `instagram=erro&motivo=${result.code}`);
       },
     },
