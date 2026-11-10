@@ -4,7 +4,7 @@ import { useServerFn } from '@tanstack/react-start';
 import { Instagram, LoaderCircle, Trash2, Save, Stethoscope, KeyRound, Building2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { PasswordInput } from '@/components/password-input';
-import { getInstagramStatus, saveInstagramSecret, connectOwnInstagram, startInstagramLogin, checkInstagramConnection, disconnectInstagram, removeInstagramApp } from '@/lib/instagram.functions';
+import { getInstagramStatus, saveInstagramSecret, connectOwnInstagram, startInstagramLogin, checkInstagramConnection, disconnectInstagram, removeInstagramApp, chooseInstagramAccount, cancelInstagramChoice } from '@/lib/instagram.functions';
 import { instagramSecretSchema, ownAccountSchema, instagramErrorMessage } from '@/lib/instagram';
 
 const fieldClass = 'h-11 w-full rounded-md border bg-background px-3 text-base';
@@ -18,6 +18,8 @@ export function InstagramCard() {
   const check = useServerFn(checkInstagramConnection);
   const disconnect = useServerFn(disconnectInstagram);
   const removeApp = useServerFn(removeInstagramApp);
+  const choose = useServerFn(chooseInstagramAccount);
+  const cancelChoice = useServerFn(cancelInstagramChoice);
   const [appSecret, setAppSecret] = useState('');
   const [ownToken, setOwnToken] = useState('');
   const [ownId, setOwnId] = useState('');
@@ -31,7 +33,7 @@ export function InstagramCard() {
     const params = new URLSearchParams(window.location.search);
     const result = params.get('instagram');
     if (!result) return;
-    setNotice(result === 'ok' ? 'Instagram conectado com sucesso.' : instagramErrorMessage(params.get('motivo')));
+    setNotice(result === 'ok' ? 'Instagram conectado com sucesso.' : result === 'escolher' ? 'Escolha abaixo qual conta usar.' : instagramErrorMessage(params.get('motivo')));
     window.history.replaceState(null, '', window.location.pathname);
     void queryClient.invalidateQueries({ queryKey: ['instagram'] });
   }, [queryClient]);
@@ -68,6 +70,7 @@ export function InstagramCard() {
     setBusy('');
   }
 
+  const choices = status?.choices ?? [];
   const account = status?.account ?? null;
   const secretSaved = Boolean(status?.appConfigured);
   const needsConnect = !account || account.expired || switching;
@@ -85,7 +88,18 @@ export function InstagramCard() {
       <p className="text-muted-foreground">{account.expired ? 'O acesso deixou de valer. Conecte de novo.' : 'Este acesso não tem prazo de validade. Se um dia parar de funcionar, o app avisa e você conecta de novo.'}</p>
     </div>}
 
-    {status && needsConnect && <div className="mt-6 space-y-3">
+    {choices.length > 0 && <div className="mt-6 space-y-3 rounded-md border p-4">
+      <p className="text-sm font-medium">Qual conta do Instagram você quer usar?</p>
+      <p className="text-sm text-muted-foreground">A Meta liberou mais de uma conta para o app. Escolha a que vai publicar.</p>
+      <div className="grid gap-2">
+        {choices.map(choice => <Button key={choice.igUserId} variant="outline" className="min-h-11 justify-start" disabled={busy !== ''} onClick={() => void act('choose', () => choose({ data: { igUserId: choice.igUserId } })).then(ok => { if (ok) setSwitching(false); })}>
+          {busy === 'choose' ? <LoaderCircle className="animate-spin" /> : <Instagram />}{choice.username ? `@${choice.username}` : choice.igUserId}
+        </Button>)}
+      </div>
+      <Button variant="ghost" className="min-h-11" disabled={busy !== ''} onClick={() => void act('cancelChoice', () => cancelChoice())}>Cancelar</Button>
+    </div>}
+
+    {status && needsConnect && choices.length === 0 && <div className="mt-6 space-y-3">
       <p className="text-sm text-muted-foreground">Entre com o Instagram ou com o Facebook, escolha o portfólio empresarial e a conta do Instagram profissional que será usada. Não é preciso ter Página do Facebook.</p>
       <Button size="lg" className="min-h-12 w-full text-base font-semibold sm:w-auto" onClick={() => void connect()} disabled={busy !== ''}>
         {busy === 'connect' ? <LoaderCircle className="animate-spin" /> : <Instagram />}{account ? 'Conectar de novo com Instagram ou Facebook' : 'Conectar com Instagram ou Facebook'}
