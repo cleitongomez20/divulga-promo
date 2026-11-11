@@ -49,6 +49,13 @@ describe('earnings for a chosen period', () => {
   });
 });
 
+describe('pending total', () => {
+  it('sums every pending item even when Shopee reports a smaller amount for the conversion', () => {
+    const item = (id: string, cents: number): SummaryRow => ({ conversion_id: 'c1', external_order_id: id, status: 'pending', fraud_status: null, commission_cents: cents, conversion_commission_cents: 269, ordered_at: '2026-11-01T11:00:00Z', completed_at: null });
+    expect(summarizeSales([item('o1', 269), item('o2', 217)], SP, now).pendingCents).toBe(486);
+  });
+});
+
 describe('which window a manual run asks for', () => {
   const history = [{ field: 'purchase' as const, start: 1, end: 2 }];
   it('"Atualizar agora" puts the last 7 days first', () => {
