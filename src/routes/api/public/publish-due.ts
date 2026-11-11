@@ -19,7 +19,10 @@ async function handle(request: Request) {
     const { supabaseAdmin } = await import('@/integrations/supabase/client.server');
     const { runPublishTick } = await import('@/lib/publisher.server');
     const counts = await runPublishTick(supabaseAdmin as never, { masterKey });
-    return Response.json({ ok: true, counts }, { headers: { 'Cache-Control': 'no-store' } });
+    // Videos being made at Higgsfield are followed on the same visit; a problem there never stops the publishing above.
+    let videos: unknown = null;
+    try { const { advanceVideoJobs } = await import('@/lib/video-jobs.server'); videos = await advanceVideoJobs(supabaseAdmin as never, { masterKey }); } catch { videos = null; }
+    return Response.json({ ok: true, counts, videos }, { headers: { 'Cache-Control': 'no-store' } });
   } catch {
     return Response.json({ ok: false }, { status: 500, headers: { 'Cache-Control': 'no-store' } });
   }
