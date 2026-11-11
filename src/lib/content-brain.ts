@@ -1,137 +1,130 @@
-import { z } from 'zod';
-import { isShopeeUrl } from './products';
+// Server-only: the content brain. The code decides what the AI may choose from and checks everything it writes;
+// the AI only picks one product and writes the text. Nothing is published here: the result is always a draft for the user to approve.
+import type { SupabaseClient } from '@supabase/supabase-js';
+import { askClaude, type ClaudeMessage } from './claude.server';
+import {
+  AI_FORMATS_NOW, assembleCaption, buildPrompt, feedbackMessage, isShopeeImageUrl, judgeAnswer, pickCandidates, subIdOf, TRIGGER_WORD, type AiOutput, type ProductCandidate,
+} from './content-brain';
+import { MEDIA_BUCKET } from './posts';
+import { encodeSubIds } from './products';
 
-/** Word the follower comments to receive the link (the automatic reply is built in a later step). */
-export const TRIGGER_WORD = 'EU QUERO';
-/** Added by the code to every AI caption, never left to the AI. */
-export const DISCLOSURE = '#publi · Link de afiliado';
-export const CAPTION_MAX = 2200;
-export const POOL_SIZE = 12;
-/** Prices and availability change: a product collected longer ago than this is not offered to the AI. */
-export const MAX_PRODUCT_AGE_DAYS = 30;
-export const MIN_RATING = 4;
-/** Formats the brain can already finish by itself. Carousel, Story art and Reels need pictures and video made in the next steps. */
-export const AI_FORMATS_NOW = ['photo'] as const;
+type Db = SupabaseClient;
+type Row = Record<string, unknown>;
+type Fetcher = typeof fetch;
 
-/** Only Shopee image hosts are ever downloaded. */
-export const IMAGE_HOST_SUFFIXES = ['susercontent.com', 'shopee.com.br', 'shopee.com', 'shopeemobile.com'] as const;
-export function isShopeeImageUrl(value: string): boolean {
-  try {
-    const url = new URL(value); const host = url.hostname.toLowerCase();
-    return url.protocol === 'https:' && IMAGE_HOST_SUFFIXES.some(suffix => host === suffix || host.endsWith(`.${suffix}`));
-  } catch { return false; }
-}
+/** An error whose message is already written for the user. */
+export class BrainError extends Error {}
+export type DraftResult = { postId: string; productTitle: string; costMicros: number; linkMissing: boolean };
 
-export type ProductCandidate = {
-  id: string; externalId: string; title: string; price: number | null; commission: number | null; sales: number | null; rating: number | null;
-  imageUrl: string; url: string; collectedAt: string;
-};
+const str = (value: unknown) => (typeof value === 'string' ? value : '');
+const numOrNull = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) ? value : null);
 
-/** The products the AI may choose from: recent, with a usable photo and link, well rated, not used lately; the best sellers first. */
-export function pickCandidates(products: readonly ProductCandidate[], options: { nowMs: number; recentProductIds: ReadonlySet<string> }): ProductCandidate[] {
-  const oldest = options.nowMs - MAX_PRODUCT_AGE_DAYS * 86_400_000;
-  return products
-    .filter(item => item.title.trim() && isShopeeImageUrl(item.imageUrl) && isShopeeUrl(item.url) && Date.parse(item.collectedAt) >= oldest
-      && !options.recentProductIds.has(item.id) && (item.rating === null || item.rating >= MIN_RATING))
-    .sort((a, b) => (b.sales ?? -1) - (a.sales ?? -1))
-    .slice(0, POOL_SIZE);
-}
-
-export function buildPrompt(candidates: readonly ProductCandidate[]): { system: string; user: string } {
-  const system = [
-    'Você é o estrategista de conteúdo e redator de uma conta brasileira de Instagram que indica produtos da Shopee como afiliada.',
-    'Tom: amiga indicando uma descoberta, em português do Brasil, informal, leve e direto. Frases curtas, parágrafos de 1 a 2 linhas, no máximo 3 emojis.',
-    '',
-    'Sua tarefa: escolher UM produto da lista e escrever a legenda de uma publicação de foto no feed.',
-    'Escolha o produto com mais chance de gerar clique e venda: compra por impulso, utilidade fácil de entender, apelo visual, boa comissão e boa prova social.',
-    '',
-    'Use gatilhos mentais de forma VERDADEIRA: identificação com um problema do dia a dia, curiosidade, benefício claro, simplicidade, prova social em termos gerais (por exemplo "muita gente já levou") e vontade de ter.',
-    '',
-    'Regras que nunca podem ser quebradas:',
-    '- Use somente o que está no nome do produto. Não invente medidas, materiais, funções, marcas, garantias, resultados nem comparações.',
-    '- Nunca escreva preço, desconto, porcentagem, número de vendas, nota ou comissão. Esses dados são só para você escolher.',
-    '- Nunca crie urgência ou escassez falsa: nada de "últimas unidades", "só hoje", "estoque acabando", "promoção relâmpago" ou prazo.',
-    '- Nunca prometa cura, emagrecimento, resultado garantido nem fale de saúde de forma milagrosa.',
-    '- Não escreva link, hashtags nem chamada para comentar: o sistema acrescenta isso depois.',
-    '',
-    'A legenda tem de 3 a 6 linhas curtas. A primeira linha é o gancho, com no máximo 90 caracteres, e precisa prender a atenção.',
-    '',
-    'Responda SOMENTE com um objeto JSON válido, sem texto antes ou depois e sem blocos de código, neste formato:',
-    '{"chosen_product_id":"<id exato da lista>","reason":"<por que escolheu este produto, em 1 ou 2 frases, usando só os dados da lista>","angle":"<o ângulo do conteúdo em poucas palavras>","hook":"<a primeira linha da legenda>","caption":"<a legenda completa, que começa com o gancho>","hashtags":["#...","#..."]}',
-    'Use de 5 a 10 hashtags em português, relevantes ao produto.',
-  ].join('\n');
-  const list = candidates.map(item => ({
-    id: item.id, nome: item.title, preco_reais: item.price, comissao_percentual: item.commission === null ? null : Math.round(item.commission * 1000) / 10,
-    vendas: item.sales, nota: item.rating,
-  }));
-  return { system, user: `Produtos disponíveis (escolha um):\n${JSON.stringify(list, null, 1)}` };
-}
-
-/** Takes the JSON object out of the answer, even if the AI wrapped it in a code block or added a sentence around it. */
-export function extractJson(text: string): unknown {
-  const stripped = text.replace(/```(?:json)?/gi, '');
-  const start = stripped.indexOf('{'); const end = stripped.lastIndexOf('}');
-  if (start < 0 || end <= start) return null;
-  try { return JSON.parse(stripped.slice(start, end + 1)); } catch { return null; }
-}
-
-export function normalizeHashtags(values: readonly string[]): string[] {
-  const seen = new Set<string>(); const result: string[] = [];
-  for (const raw of values) {
-    const word = raw.trim().replace(/^#+/, '').replace(/\s+/g, '');
-    if (!/^[\p{L}\p{N}_]{2,40}$/u.test(word)) continue;
-    const tag = `#${word}`; const key = tag.toLowerCase();
-    if (!seen.has(key)) { seen.add(key); result.push(tag); }
+/** Downloads a Shopee product photo. Only Shopee hosts, at most two redirects, and the bytes must really be a JPEG. */
+export async function downloadJpeg(fetcher: Fetcher, url: string): Promise<Uint8Array | null> {
+  let current = url;
+  for (let hop = 0; hop < 3; hop++) {
+    if (!isShopeeImageUrl(current)) return null;
+    let res: Response;
+    try { res = await fetcher(current, { redirect: 'manual', headers: { accept: 'image/jpeg,image/*;q=0.8' }, signal: AbortSignal.timeout(12_000) }); } catch { return null; }
+    if (res.status >= 300 && res.status < 400) {
+      const next = res.headers.get('location'); if (!next) return null;
+      try { current = new URL(next, current).toString(); } catch { return null; }
+      continue;
+    }
+    if (!res.ok) return null;
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    if (bytes.length < 5_000 || bytes.length > 10_000_000) return null;
+    return bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff ? bytes : null;
   }
-  return result.slice(0, 12);
+  return null;
 }
 
-export const aiOutputSchema = z.object({
-  chosen_product_id: z.string().min(1),
-  reason: z.string().trim().min(10).max(500),
-  angle: z.string().trim().min(2).max(120),
-  hook: z.string().trim().min(5).max(140),
-  caption: z.string().trim().min(40).max(1200),
-  hashtags: z.array(z.string()).min(3).max(20),
-});
-export type AiOutput = z.infer<typeof aiOutputSchema>;
+/** The Instagram account and the products the AI may choose from (recent, with photo and link, well rated, not used lately). */
+export async function loadCandidatePool(db: Db, userId: string, at: number): Promise<{ accountId: string; candidates: ProductCandidate[]; repeatDays: number }> {
+  const { data: account } = await db.from('instagram_accounts').select('id').eq('user_id', userId).order('created_at', { ascending: true }).limit(1).maybeSingle();
+  if (!account) throw new BrainError('Conecte o Instagram na tela Conexões antes de gerar conteúdo.');
+  const accountId = str((account as Row)['id']);
 
-const RULES: { pattern: RegExp; message: string }[] = [
-  { pattern: /R\$\s*\d|\d\s*reais|\bpor apenas\b|\bpor só\b/i, message: 'a legenda cita preço' },
-  { pattern: /\d\s*%|\bpor cento\b|\bdesconto\b/i, message: 'a legenda cita porcentagem ou desconto' },
-  { pattern: /\d[\d.,]*\s*(mil\s+)?(vendas|vendidos|vendidas|compras|avalia)/i, message: 'a legenda cita número de vendas ou avaliações' },
-  { pattern: /últim[ao]s?\s+unidades?|\bestoque\b|só hoje|acaba hoje|termina hoje|corre que|rel[âa]mpago|por tempo limitado|poucas unidades|queima de/i, message: 'a legenda cria urgência ou escassez que não pode ser comprovada' },
-  { pattern: /\bcura\b|emagrec|milagr|garantid[ao]|100\s*%\s*(eficaz|seguro)|sem efeitos? colaterais?|aprovado pela anvisa/i, message: 'a legenda faz promessa de saúde ou resultado garantido' },
-  { pattern: /https?:\/\/|www\.|\.com\b/i, message: 'a legenda tem link' },
-  { pattern: /#\p{L}/u, message: 'a legenda tem hashtag (elas vão em campo separado)' },
-];
-/** Problems found in a caption written by the AI. Empty list means it can be used. */
-export function checkCaption(caption: string): string[] {
-  return RULES.filter(rule => rule.pattern.test(caption)).map(rule => rule.message);
+  const { data: settings } = await db.from('settings').select('repeat_days').eq('user_id', userId).maybeSingle();
+  const repeatDays = numOrNull((settings as Row | null)?.['repeat_days']) ?? 14;
+  const [productsResult, recentResult] = await Promise.all([
+    db.from('products').select('id,external_id,title,price,commission,sales,rating,images,url,collected_at').eq('user_id', userId).eq('marketplace', 'shopee').order('collected_at', { ascending: false }).limit(300),
+    db.from('posts').select('product_id').eq('user_id', userId).neq('status', 'canceled').gte('created_at', new Date(at - repeatDays * 86_400_000).toISOString()),
+  ]);
+  if (productsResult.error || recentResult.error) throw new BrainError('Não foi possível ler os seus produtos agora. Tente de novo.');
+  const recent = new Set(((recentResult.data ?? []) as Row[]).map(row => str(row['product_id'])));
+  const all: ProductCandidate[] = [];
+  for (const row of (productsResult.data ?? []) as Row[]) {
+    const images = Array.isArray(row['images']) ? (row['images'] as unknown[]) : [];
+    const imageUrl = str(images[0]); const url = str(row['url']);
+    if (!imageUrl || !url) continue;
+    all.push({ id: str(row['id']), externalId: str(row['external_id']), title: str(row['title']), price: numOrNull(row['price']), commission: numOrNull(row['commission']), sales: numOrNull(row['sales']), rating: numOrNull(row['rating']), imageUrl, url, collectedAt: str(row['collected_at']) });
+  }
+  const candidates = pickCandidates(all, { nowMs: at, recentProductIds: recent });
+  if (!candidates.length) throw new BrainError(`Não há produtos disponíveis. Busque produtos na tela Produtos: só entram os salvos nos últimos 30 dias, com foto, bem avaliados e que não foram usados nos últimos ${repeatDays} dias.`);
+  return { accountId, candidates, repeatDays };
 }
 
-/** The caption as it will be posted: the AI text, then the call to comment, then the affiliate notice, then the hashtags. */
-export function assembleCaption(output: Pick<AiOutput, 'caption' | 'hashtags'>): string {
-  const tags = normalizeHashtags(output.hashtags).join(' ');
-  return [output.caption.trim(), `👉 Comenta ${TRIGGER_WORD} que eu te envio o link!`, DISCLOSURE, tags].filter(Boolean).join('\n\n').slice(0, CAPTION_MAX);
+/** Downloads the product photo (a real JPEG from a Shopee host) and stores it in the user's folder. Returns the stored path. */
+export async function storeProductPhoto(db: Db, p: { userId: string; fetcher: Fetcher; imageUrl: string }): Promise<{ path: string; bytes: number }> {
+  const bytes = await downloadJpeg(p.fetcher, p.imageUrl);
+  if (!bytes) throw new BrainError('Não consegui baixar uma foto utilizável deste produto. Tente gerar de novo para escolher outro.');
+  const path = `${p.userId}/${crypto.randomUUID()}.jpg`;
+  const uploaded = await db.storage.from(MEDIA_BUCKET).upload(path, bytes, { contentType: 'image/jpeg', upsert: false, cacheControl: '31536000' });
+  if (uploaded.error) throw new BrainError('Não foi possível guardar a foto do produto. Tente de novo.');
+  return { path, bytes: bytes.length };
 }
 
-export type BrainVerdict = { ok: true; output: AiOutput } | { ok: false; problems: string[] };
-/** Reads the AI's answer and checks every rule. The problems are written so they can be sent back to the AI as feedback. */
-export function judgeAnswer(text: string, candidateIds: ReadonlySet<string>): BrainVerdict {
-  const json = extractJson(text);
-  if (!json) return { ok: false, problems: ['a resposta não é um objeto JSON válido'] };
-  const parsed = aiOutputSchema.safeParse(json);
-  if (!parsed.success) return { ok: false, problems: parsed.error.issues.map(issue => `campo ${issue.path.join('.') || 'resposta'}: ${issue.message}`).slice(0, 5) };
-  const output = parsed.data;
-  const problems: string[] = [];
-  if (!candidateIds.has(output.chosen_product_id)) problems.push('o chosen_product_id não é um id da lista');
-  problems.push(...checkCaption(`${output.hook}\n${output.caption}`));
-  if (normalizeHashtags(output.hashtags).length < 3) problems.push('há menos de 3 hashtags válidas');
-  return problems.length ? { ok: false, problems } : { ok: true, output };
-}
-export const feedbackMessage = (problems: readonly string[]) =>
-  `A resposta tem problemas: ${problems.join('; ')}. Corrija e responda de novo SOMENTE com o objeto JSON, respeitando todas as regras.`;
+export async function generateAiDraft(db: Db, p: {
+  userId: string; masterKey: string; fetcher?: Fetcher; now?: () => number;
+  /** Turns a Shopee product address into a tracked affiliate link. Returns null when it cannot (the draft is then created without a link). */
+  makeLink?: (productUrl: string, subIds: string[]) => Promise<string | null>;
+}): Promise<DraftResult> {
+  const fetcher = p.fetcher ?? fetch; const now = p.now ?? Date.now; const at = now();
 
-/** First 12 letters and numbers of the publication id. Shopee returns it on every sale from the link, which ties the sale to the publication. */
-export const subIdOf = (postId: string) => postId.replace(/[^A-Za-z0-9]/g, '').slice(0, 12);
+  const { accountId, candidates, repeatDays } = await loadCandidatePool(db, p.userId, at);
+  // The AI answers, the code checks. One correction round at most, with the problems sent back as feedback.
+  const { system, user } = buildPrompt(candidates);
+  const ids = new Set(candidates.map(item => item.id));
+  const messages: ClaudeMessage[] = [{ role: 'user', content: user }];
+  let costMicros = 0; let output: AiOutput | null = null; let lastProblems: string[] = [];
+  for (let attempt = 0; attempt < 2 && !output; attempt++) {
+    const reply = await askClaude(db, { userId: p.userId, masterKey: p.masterKey, purpose: 'conteudo', system, messages, maxTokens: 1500, timeoutMs: 60_000, fetcher, now });
+    costMicros += reply.costMicros;
+    const verdict = judgeAnswer(reply.text, ids);
+    if (verdict.ok) { output = verdict.output; break; }
+    lastProblems = verdict.problems;
+    messages.push({ role: 'assistant', content: reply.text }, { role: 'user', content: feedbackMessage(verdict.problems) });
+  }
+  if (!output) {
+    await db.from('activity_log').insert({ user_id: p.userId, action: 'Conteúdo recusado pelas regras', result: 'O Claude não escreveu dentro das regras', details: { problems: lastProblems } });
+    throw new BrainError('O Claude não conseguiu escrever dentro das regras desta vez. Tente gerar de novo.');
+  }
+  const product = candidates.find(item => item.id === output?.chosen_product_id) as ProductCandidate;
+
+  const postId = crypto.randomUUID(); const assetId = crypto.randomUUID();
+  const subId = subIdOf(postId);
+  let affiliateLink: string | null = null;
+  try { affiliateLink = (await p.makeLink?.(product.url, encodeSubIds([subId, 'ia']))) ?? null; } catch { affiliateLink = null; }
+
+  const photo = await storeProductPhoto(db, { userId: p.userId, fetcher, imageUrl: product.imageUrl });
+  const path = photo.path;
+  const undo = async () => {
+    await db.from('posts').delete().eq('id', postId).eq('user_id', p.userId);
+    await db.from('video_assets').delete().eq('id', assetId).eq('user_id', p.userId);
+    await db.storage.from(MEDIA_BUCKET).remove([path]);
+  };
+  const asset = await db.from('video_assets').insert({ id: assetId, user_id: p.userId, instagram_account_id: accountId, storage_path: path, media_type: 'image', mime_type: 'image/jpeg', size_bytes: photo.bytes, source: 'product' });
+  if (asset.error) { await undo(); throw new BrainError('Não foi possível registrar a foto. Tente de novo.'); }
+  const post = await db.from('posts').insert({
+    id: postId, user_id: p.userId, instagram_account_id: accountId, product_id: product.id, format: AI_FORMATS_NOW[0], status: 'draft', caption: assembleCaption(output),
+    trigger_word: TRIGGER_WORD, affiliate_link: affiliateLink, sub_id: subId, video_asset_id: assetId, idempotency_key: crypto.randomUUID(), source: 'ai',
+    ai_plan: { reason: output.reason, angle: output.angle, hook: output.hook, costMicros, linkMissing: affiliateLink === null, generatedAt: new Date(at).toISOString() },
+  });
+  if (post.error) { await undo(); throw new BrainError('Não foi possível criar o rascunho. Tente de novo.'); }
+  const media = await db.from('post_media').insert({ user_id: p.userId, post_id: postId, asset_id: assetId, position: 0 });
+  if (media.error) { await undo(); throw new BrainError('Não foi possível ligar a foto ao rascunho. Tente de novo.'); }
+
+  await db.from('activity_log').insert({ user_id: p.userId, action: 'Rascunho criado pelo Claude', result: `Foto do produto "${product.title.slice(0, 80)}"`, details: { post_id: postId, product_id: product.id, cost_micros: costMicros, link: affiliateLink !== null } });
+  return { postId, productTitle: product.title, costMicros, linkMissing: affiliateLink === null };
+}
