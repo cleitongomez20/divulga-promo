@@ -12,9 +12,12 @@ export const getSalesOverview = createServerFn({ method: 'GET' }).middleware([re
     const [{ data: connection }, { data: settings }, { data: state }] = await Promise.all([
       sb.from('marketplace_connections').select('credential_id,status').eq('user_id', context.userId).eq('marketplace', 'shopee').maybeSingle(),
       sb.from('settings').select('timezone').eq('user_id', context.userId).maybeSingle(),
-      sb.from('shopee_sync_state').select('last_success_at,last_result,backfill_queued,queue').eq('user_id', context.userId).maybeSingle(),
+      sb.from('shopee_sync_state').select('last_success_at,last_result,backfill_queued,queue,interval_minutes').eq('user_id', context.userId).maybeSingle(),
     ]);
     const timezone = settings?.timezone ?? 'America/Sao_Paulo';
+    // Posts published today (account time zone), counted on any day-independent period.
+    const today = periodRange('today', timezone, now);
+    const { count: publishedToday } = await sb.from('posts').select('id', { count: 'exact', head: true }).eq('user_id', context.userId).eq('status', 'published').gte('published_at', new Date(today.from).toISOString()).lt('published_at', new Date(today.to).toISOString());
     const simulated = !connection?.credential_id;
     // A custom period needs two valid dates; otherwise the current month is shown.
     const custom = data.period === 'custom' ? parseCustomRange(data.from, data.to) : null;
@@ -39,18 +42,15 @@ export const getSalesOverview = createServerFn({ method: 'GET' }).middleware([re
       period: period.key, periodLabel: period.label, periodPhrase: period.phrase,
       rangeFrom: new Date(range.from).toISOString(), rangeTo: new Date(Math.min(range.to - 1, now)).toISOString(),
       historyLoaded: Boolean(state?.backfill_queued) && queueLength === 0,
+      syncIntervalMinutes: state?.interval_minutes ?? 30,
+      publishedToday: publishedToday ?? 0,
     };
   });
 
-export const syncSalesNow = createServerFn({ method: 'POST' }).middleware([requireSupabaseAuth]).handler(async ({ context }) => {
+/** One automatic step of the Shopee sync (history windows first, then the periodic refresh).
+ *  Not manual: it follows the saved queue, the refresh interval and the pause after errors. The screen repeats it, respecting the 31s gap. */
+export const syncSalesStep = createServerFn({ method: 'POST' }).middleware([requireSupabaseAuth]).handler(async ({ context }) => {
   const { supabaseAdmin } = await import('@/integrations/supabase/client.server');
   const { runSyncTick } = await import('./shopee-sync.server');
-  return runSyncTick(supabaseAdmin, context.userId, true);
-});
-
-/** One step of the 90-day history load (one 7-day window). The screen repeats it, respecting the 30s pause. */
-export const syncHistoryStep = createServerFn({ method: 'POST' }).middleware([requireSupabaseAuth]).handler(async ({ context }) => {
-  const { supabaseAdmin } = await import('@/integrations/supabase/client.server');
-  const { runSyncTick } = await import('./shopee-sync.server');
-  return runSyncTick(supabaseAdmin, context.userId, true, 'history');
+  return runSyncTick(supabaseAdmin, context.userId, false);
 });

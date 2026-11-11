@@ -231,7 +231,9 @@ export function summarizeSales(rows: SummaryRow[], timeZone: string, nowMs: numb
     for (const bucket of ['completed', 'pending'] as const) {
       const inBucket = valid.filter(i => i.status === bucket); if (!inBucket.length) continue;
       const itemSum = inBucket.reduce((s, i) => s + i.commission_cents, 0);
-      const amount = uniform && buckets.has(bucket) && inBucket[0]!.conversion_commission_cents ? inBucket[0]!.conversion_commission_cents : itemSum;
+      // Pending is always the sum of the items shown in the list, so the card matches the sales below it.
+      // Completed keeps Shopee's net amount for the whole conversion when every item is completed.
+      const amount = bucket === 'completed' && uniform && inBucket[0]!.conversion_commission_cents ? inBucket[0]!.conversion_commission_cents : itemSum;
       const when = bucket === 'completed' ? (inBucket.map(i => i.completed_at).filter(Boolean).sort().pop() ?? inBucket[0]!.ordered_at) : inBucket[0]!.ordered_at;
       if (!inPeriod(when ?? null)) continue;
       if (bucket === 'completed') earnedCents += amount; else pendingCents += amount;
