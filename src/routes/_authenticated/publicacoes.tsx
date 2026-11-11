@@ -2,14 +2,14 @@ import { createFileRoute, Link } from '@tanstack/react-router';
 import { useQuery, useQueryClient, useSuspenseQuery } from '@tanstack/react-query';
 import { useServerFn } from '@tanstack/react-start';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { ArrowDown, ArrowUp, CalendarClock, LoaderCircle, Pencil, Send, Sparkles, Upload, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, CalendarClock, Clapperboard, LoaderCircle, Pencil, Send, Sparkles, Upload, X } from 'lucide-react';
 import { WorkspaceShell } from '@/components/workspace-shell';
 import { Button } from '@/components/ui/button';
 import { supabase } from '@/integrations/supabase/client';
 import { pageHead } from '@/lib/metadata';
 import { workspaceQuery } from '@/lib/workspace-query';
 import { cancelPost, createManualPost, getPostsOverview, queuePostNow, schedulePostAt, updateDraftCaption, type PostView } from '@/lib/posts.functions';
-import { generateContent } from '@/lib/brain.functions';
+import { generateContent, generateVideo } from '@/lib/brain.functions';
 import { HEARTBEAT_STALE_MS } from '@/lib/publishing';
 import { prepareFile, removeUploads, uploadPrepared } from '@/lib/media-upload';
 import { FORMAT_LABELS, FORMAT_RULES, MAX_CAPTION, POST_FORMATS, STATUS_LABELS, CANCELABLE_STATUSES, checkSchedule, formatInZone, validateMedia, zonedTimeToUtcIso, type PostFormat } from '@/lib/posts';
@@ -28,7 +28,7 @@ const ACCEPT: Record<PostFormat, string> = {
   carousel: 'image/*,video/mp4,video/quicktime,.mp4,.mov',
 };
 const STATUS_STYLE: Record<string, string> = {
-  draft: 'bg-muted text-muted-foreground', scheduled: 'bg-accent text-accent-foreground', publishing: 'bg-accent text-accent-foreground',
+  draft: 'bg-muted text-muted-foreground', rendering: 'bg-accent text-accent-foreground', scheduled: 'bg-accent text-accent-foreground', publishing: 'bg-accent text-accent-foreground',
   published: 'bg-primary text-primary-foreground', failed: 'bg-destructive text-destructive-foreground', canceled: 'bg-muted text-muted-foreground',
 };
 const isImageFile = (file: File) => file.type.startsWith('image/');
@@ -39,12 +39,13 @@ function PostsPage() {
   const queryClient = useQueryClient();
   const { data: overview, isLoading, isError } = useQuery({
     queryKey: ['posts'], queryFn: () => getPostsOverview(), staleTime: 0,
-    refetchInterval: query => (query.state.data?.posts.some(post => post.status === 'scheduled' || post.status === 'publishing') ? 30_000 : false),
+    refetchInterval: query => (query.state.data?.posts.some(post => post.status === 'rendering') ? 15_000 : query.state.data?.posts.some(post => post.status === 'scheduled' || post.status === 'publishing') ? 30_000 : false),
   });
   const create = useServerFn(createManualPost);
   const cancel = useServerFn(cancelPost);
   const queue = useServerFn(queuePostNow);
   const generate = useServerFn(generateContent);
+  const orderVideoFn = useServerFn(generateVideo);
   const saveCaption = useServerFn(updateDraftCaption);
   const schedule = useServerFn(schedulePostAt);
   const [editing, setEditing] = useState<{ id: string; text: string } | null>(null);
@@ -164,6 +165,15 @@ function PostsPage() {
     } catch { setMessage('Não foi possível gerar o conteúdo agora. Tente de novo.'); }
     finally { setBusy(''); }
   }
+  async function orderVideo(format: 'reel' | 'story') {
+    setBusy('O Claude está planejando o vídeo e pedindo ao Higgsfield (pode levar até 1 minuto)...'); setMessage('');
+    try {
+      const result = await orderVideoFn({ data: { format } });
+      setMessage(result.message);
+      await queryClient.invalidateQueries({ queryKey: ['posts'] });
+    } catch { setMessage('Não foi possível pedir o vídeo agora. Tente de novo.'); }
+    finally { setBusy(''); }
+  }
   async function saveEdit() {
     if (!editing) return;
     setBusy('Salvando legenda...'); setMessage('');
@@ -191,7 +201,7 @@ function PostsPage() {
   }
 
   const formBusy = busy.startsWith('O Claude') ? '' : busy;
-  const waiting = overview?.posts.some(post => post.status === 'scheduled') ?? false;
+  const waiting = overview?.posts.some(post => post.status === 'scheduled' || post.status === 'rendering') ?? false;
   const lastVisit = overview?.scheduler.lastVisitAt ? Date.parse(overview.scheduler.lastVisitAt) : null;
   const schedulerSilent = waiting && (lastVisit === null || Date.now() - lastVisit > HEARTBEAT_STALE_MS);
 
@@ -207,9 +217,14 @@ function PostsPage() {
 
     <section className="mt-8 rounded-lg border bg-card p-5" aria-labelledby="ai-title">
       <div className="flex items-center gap-3"><Sparkles className="size-6 text-primary" /><h2 id="ai-title" className="text-lg font-semibold">Gerar com o Claude</h2></div>
-      <p className="mt-2 text-sm text-muted-foreground">O Claude escolhe um dos produtos que você já buscou, escreve a legenda e cria um rascunho com a foto do produto. Você revisa, edita e aprova antes de qualquer coisa ser publicada.</p>
+      <p className="mt-2 text-sm text-muted-foreground">O Claude escolhe um dos produtos que você já buscou e escreve a legenda. Em foto, cria um rascunho com a foto do produto na hora. Em Reels e Story, pede um vídeo ao Higgsfield, que leva alguns minutos e aparece aqui como rascunho. Você revisa, edita e aprova antes de qualquer coisa ser publicada.</p>
       {overview && !overview.ai.connected && <p className="mt-3 text-sm font-medium">Conecte o Claude na tela <Link to="/conexoes" className="underline">Conexões</Link> para usar.</p>}
       <Button type="button" className="mt-4 h-11" disabled={Boolean(busy) || !overview?.ai.connected || !overview?.account} onClick={() => void generateOne()}>{busy.startsWith('O Claude') ? <LoaderCircle className="animate-spin" /> : <Sparkles />}Gerar conteúdo com o Claude</Button>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <Button type="button" variant="outline" className="h-11" disabled={Boolean(busy) || !overview?.ai.videoReady || !overview?.account} onClick={() => void orderVideo('reel')}><Clapperboard />Criar Reels com o Claude</Button>
+        <Button type="button" variant="outline" className="h-11" disabled={Boolean(busy) || !overview?.ai.videoReady || !overview?.account} onClick={() => void orderVideo('story')}><Clapperboard />Criar Story com o Claude</Button>
+      </div>
+      {overview?.ai.connected && !overview.ai.videoReady && <p className="mt-3 text-sm font-medium">Para criar vídeos, conecte o Higgsfield na tela <Link to="/conexoes" className="underline">Conexões</Link>.</p>}
       {busy.startsWith('O Claude') && <p role="status" className="mt-3 text-sm text-muted-foreground">{busy}</p>}
     </section>
 
@@ -269,11 +284,12 @@ function PostsPage() {
           <div className="mt-2 flex flex-wrap gap-2"><Button type="button" size="sm" className="min-h-11" disabled={Boolean(busy)} onClick={() => void saveEdit()}>Salvar legenda</Button><Button type="button" variant="outline" size="sm" className="min-h-11" disabled={Boolean(busy)} onClick={() => setEditing(null)}>Cancelar</Button></div></div>
         : post.caption && <p className={`mt-1 text-xs text-muted-foreground ${post.status === 'draft' ? 'whitespace-pre-line' : 'line-clamp-2'}`}>{post.caption}</p>}
       {post.error && <p className={`mt-1 text-xs font-medium ${post.status === 'failed' ? 'text-destructive' : 'text-muted-foreground'}`}>{post.status === 'failed' ? post.error : `Aviso: ${post.error}`}</p>}
-      {post.media.length > 0 && <div className="mt-3 flex flex-wrap gap-2">{post.media.slice(0, 5).map((media, index) => <div key={index} className="size-16 overflow-hidden rounded bg-muted">{media.kind === 'image' ? <img src={media.url} alt="" loading="lazy" className="size-full object-cover" /> : <video src={media.url} muted playsInline preload="metadata" className="size-full object-cover" />}</div>)}{post.media.length > 5 && <span className="self-center text-xs text-muted-foreground">+{post.media.length - 5}</span>}</div>}
+      {post.status === 'rendering' && <p className="mt-2 flex items-center gap-2 text-xs text-muted-foreground"><LoaderCircle className="size-3.5 animate-spin" />O Higgsfield está gerando o vídeo. Leva alguns minutos e ele aparece aqui como rascunho.</p>}
+      {post.media.length > 0 && <div className="mt-3 flex flex-wrap gap-2">{post.media.slice(0, 5).map((media, index) => <div key={index} className={`overflow-hidden rounded bg-muted ${media.kind === 'video' && post.status === 'draft' ? 'w-40' : 'size-16'}`}>{media.kind === 'image' ? <img src={media.url} alt="" loading="lazy" className="size-full object-cover" /> : <video src={media.url} muted={post.status !== 'draft'} controls={post.status === 'draft'} playsInline preload="metadata" className="size-full object-cover" />}</div>)}{post.media.length > 5 && <span className="self-center text-xs text-muted-foreground">+{post.media.length - 5}</span>}</div>}
       <div className="mt-3 flex flex-wrap gap-2">
-        {post.status === 'draft' && editing?.id !== post.id && <Button type="button" variant="outline" size="sm" className="min-h-11" disabled={Boolean(busy)} onClick={() => setEditing({ id: post.id, text: post.caption })}><Pencil />Editar legenda</Button>}
+        {post.status === 'draft' && post.format !== 'story' && editing?.id !== post.id && <Button type="button" variant="outline" size="sm" className="min-h-11" disabled={Boolean(busy)} onClick={() => setEditing({ id: post.id, text: post.caption })}><Pencil />Editar legenda</Button>}
         {['draft', 'scheduled'].includes(post.status) && <Button type="button" variant="outline" size="sm" className="min-h-11" disabled={Boolean(busy) || !connected} onClick={() => setScheduling(scheduling?.id === post.id ? null : { id: post.id, when: '' })}><CalendarClock />Agendar</Button>}
-        {['draft', 'scheduled', 'failed'].includes(post.status) && <Button type="button" size="sm" className="min-h-11" disabled={Boolean(busy) || !connected} onClick={() => void sendNow(post)}><Send />{post.status === 'failed' ? 'Tentar de novo' : 'Publicar agora'}</Button>}
+        {['draft', 'scheduled', 'failed'].includes(post.status) && !(post.status === 'failed' && post.media.length === 0) && <Button type="button" size="sm" className="min-h-11" disabled={Boolean(busy) || !connected} onClick={() => void sendNow(post)}><Send />{post.status === 'failed' ? 'Tentar de novo' : 'Publicar agora'}</Button>}
         {(CANCELABLE_STATUSES as readonly string[]).includes(post.status) && <Button type="button" variant="outline" size="sm" className="min-h-11" disabled={Boolean(busy)} onClick={() => void cancelOne(post)}>Cancelar</Button>}
       </div>
       {scheduling?.id === post.id && <div className="mt-3 flex flex-wrap items-end gap-2"><div><label className="form-label" htmlFor={`when-${post.id}`}>Data e hora (fuso da sua conta)</label><input id={`when-${post.id}`} type="datetime-local" className="field" value={scheduling.when} onChange={e => setScheduling({ id: post.id, when: e.target.value })} /></div><Button type="button" size="sm" className="min-h-11" disabled={Boolean(busy)} onClick={() => void confirmSchedule()}>Confirmar agendamento</Button></div>}
