@@ -39,22 +39,17 @@ export async function downloadJpeg(fetcher: Fetcher, url: string): Promise<Uint8
   return null;
 }
 
-export async function generateAiDraft(db: Db, p: {
-  userId: string; masterKey: string; fetcher?: Fetcher; now?: () => number;
-  /** Turns a Shopee product address into a tracked affiliate link. Returns null when it cannot (the draft is then created without a link). */
-  makeLink?: (productUrl: string, subIds: string[]) => Promise<string | null>;
-}): Promise<DraftResult> {
-  const fetcher = p.fetcher ?? fetch; const now = p.now ?? Date.now; const at = now();
-
-  const { data: account } = await db.from('instagram_accounts').select('id').eq('user_id', p.userId).order('created_at', { ascending: true }).limit(1).maybeSingle();
+/** The Instagram account and the products the AI may choose from (recent, with photo and link, well rated, not used lately). */
+export async function loadCandidatePool(db: Db, userId: string, at: number): Promise<{ accountId: string; candidates: ProductCandidate[]; repeatDays: number }> {
+  const { data: account } = await db.from('instagram_accounts').select('id').eq('user_id', userId).order('created_at', { ascending: true }).limit(1).maybeSingle();
   if (!account) throw new BrainError('Conecte o Instagram na tela Conexões antes de gerar conteúdo.');
   const accountId = str((account as Row)['id']);
 
-  const { data: settings } = await db.from('settings').select('repeat_days').eq('user_id', p.userId).maybeSingle();
+  const { data: settings } = await db.from('settings').select('repeat_days').eq('user_id', userId).maybeSingle();
   const repeatDays = numOrNull((settings as Row | null)?.['repeat_days']) ?? 14;
   const [productsResult, recentResult] = await Promise.all([
-    db.from('products').select('id,external_id,title,price,commission,sales,rating,images,url,collected_at').eq('user_id', p.userId).eq('marketplace', 'shopee').order('collected_at', { ascending: false }).limit(300),
-    db.from('posts').select('product_id').eq('user_id', p.userId).neq('status', 'canceled').gte('created_at', new Date(at - repeatDays * 86_400_000).toISOString()),
+    db.from('products').select('id,external_id,title,price,commission,sales,rating,images,url,collected_at').eq('user_id', userId).eq('marketplace', 'shopee').order('collected_at', { ascending: false }).limit(300),
+    db.from('posts').select('product_id').eq('user_id', userId).neq('status', 'canceled').gte('created_at', new Date(at - repeatDays * 86_400_000).toISOString()),
   ]);
   if (productsResult.error || recentResult.error) throw new BrainError('Não foi possível ler os seus produtos agora. Tente de novo.');
   const recent = new Set(((recentResult.data ?? []) as Row[]).map(row => str(row['product_id'])));
@@ -67,7 +62,27 @@ export async function generateAiDraft(db: Db, p: {
   }
   const candidates = pickCandidates(all, { nowMs: at, recentProductIds: recent });
   if (!candidates.length) throw new BrainError(`Não há produtos disponíveis. Busque produtos na tela Produtos: só entram os salvos nos últimos 30 dias, com foto, bem avaliados e que não foram usados nos últimos ${repeatDays} dias.`);
+  return { accountId, candidates, repeatDays };
+}
 
+/** Downloads the product photo (a real JPEG from a Shopee host) and stores it in the user's folder. Returns the stored path. */
+export async function storeProductPhoto(db: Db, p: { userId: string; fetcher: Fetcher; imageUrl: string }): Promise<{ path: string; bytes: number }> {
+  const bytes = await downloadJpeg(p.fetcher, p.imageUrl);
+  if (!bytes) throw new BrainError('Não consegui baixar uma foto utilizável deste produto. Tente gerar de novo para escolher outro.');
+  const path = `${p.userId}/${crypto.randomUUID()}.jpg`;
+  const uploaded = await db.storage.from(MEDIA_BUCKET).upload(path, bytes, { contentType: 'image/jpeg', upsert: false, cacheControl: '31536000' });
+  if (uploaded.error) throw new BrainError('Não foi possível guardar a foto do produto. Tente de novo.');
+  return { path, bytes: bytes.length };
+}
+
+export async function generateAiDraft(db: Db, p: {
+  userId: string; masterKey: string; fetcher?: Fetcher; now?: () => number;
+  /** Turns a Shopee product address into a tracked affiliate link. Returns null when it cannot (the draft is then created without a link). */
+  makeLink?: (productUrl: string, subIds: string[]) => Promise<string | null>;
+}): Promise<DraftResult> {
+  const fetcher = p.fetcher ?? fetch; const now = p.now ?? Date.now; const at = now();
+
+  const { accountId, candidates, repeatDays } = await loadCandidatePool(db, p.userId, at);
   // The AI answers, the code checks. One correction round at most, with the problems sent back as feedback.
   const { system, user } = buildPrompt(candidates);
   const ids = new Set(candidates.map(item => item.id));
@@ -87,23 +102,19 @@ export async function generateAiDraft(db: Db, p: {
   }
   const product = candidates.find(item => item.id === output?.chosen_product_id) as ProductCandidate;
 
-  const bytes = await downloadJpeg(fetcher, product.imageUrl);
-  if (!bytes) throw new BrainError('Não consegui baixar uma foto utilizável deste produto. Tente gerar de novo para escolher outro.');
-
   const postId = crypto.randomUUID(); const assetId = crypto.randomUUID();
   const subId = subIdOf(postId);
   let affiliateLink: string | null = null;
   try { affiliateLink = (await p.makeLink?.(product.url, encodeSubIds([subId, 'ia']))) ?? null; } catch { affiliateLink = null; }
 
-  const path = `${p.userId}/${crypto.randomUUID()}.jpg`;
-  const uploaded = await db.storage.from(MEDIA_BUCKET).upload(path, bytes, { contentType: 'image/jpeg', upsert: false, cacheControl: '31536000' });
-  if (uploaded.error) throw new BrainError('Não foi possível guardar a foto do produto. Tente de novo.');
+  const photo = await storeProductPhoto(db, { userId: p.userId, fetcher, imageUrl: product.imageUrl });
+  const path = photo.path;
   const undo = async () => {
     await db.from('posts').delete().eq('id', postId).eq('user_id', p.userId);
     await db.from('video_assets').delete().eq('id', assetId).eq('user_id', p.userId);
     await db.storage.from(MEDIA_BUCKET).remove([path]);
   };
-  const asset = await db.from('video_assets').insert({ id: assetId, user_id: p.userId, instagram_account_id: accountId, storage_path: path, media_type: 'image', mime_type: 'image/jpeg', size_bytes: bytes.length, source: 'product' });
+  const asset = await db.from('video_assets').insert({ id: assetId, user_id: p.userId, instagram_account_id: accountId, storage_path: path, media_type: 'image', mime_type: 'image/jpeg', size_bytes: photo.bytes, source: 'product' });
   if (asset.error) { await undo(); throw new BrainError('Não foi possível registrar a foto. Tente de novo.'); }
   const post = await db.from('posts').insert({
     id: postId, user_id: p.userId, instagram_account_id: accountId, product_id: product.id, format: AI_FORMATS_NOW[0], status: 'draft', caption: assembleCaption(output),
