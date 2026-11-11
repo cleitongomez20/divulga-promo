@@ -10,15 +10,21 @@ import {
 
 export type PostActionResult = { status: 'ok'; message?: string; postId?: string } | { status: 'error'; message: string };
 export type PostMediaView = { url: string; kind: MediaKind };
-export type AiPlanView = { angle: string | null; reason: string | null; linkMissing: boolean };
-export type PostView = { id: string; format: string; status: string; attempts: number; scheduledAt: string | null; publishedAt: string | null; caption: string; productTitle: string; error: string | null; source: string; aiPlan: AiPlanView | null; media: PostMediaView[] };
-export type PostsOverview = { scheduler: { lastVisitAt: string | null }; account: { username: string | null; status: string } | null; ai: { connected: boolean }; products: { id: string; title: string }[]; posts: PostView[] };
+export type AiPlanView = { reason: string; angle: string; hook: string; linkMissing: boolean };
+export type PostView = { id: string; format: string; status: string; attempts: number; source: string; aiPlan: AiPlanView | null; hasLink: boolean; scheduledAt: string | null; publishedAt: string | null; caption: string; productTitle: string; error: string | null; media: PostMediaView[] };
+export type PostsOverview = { ai: { connected: boolean; videoReady: boolean }; scheduler: { lastVisitAt: string | null }; account: { username: string | null; status: string } | null; products: { id: string; title: string }[]; posts: PostView[] };
 
 // The generated database types do not know the media columns and the post_media table yet, so this file talks to the database without them.
 async function admin() { return (await import('@/integrations/supabase/client.server')).supabaseAdmin as unknown as SupabaseClient; }
 type Row = Record<string, unknown>;
 const text = (value: unknown) => (typeof value === 'string' ? value : '');
 const textOrNull = (value: unknown) => (typeof value === 'string' && value ? value : null);
+
+function aiPlanOf(value: unknown): AiPlanView | null {
+  if (!value || typeof value !== 'object') return null;
+  const plan = value as Row;
+  return { reason: text(plan['reason']), angle: text(plan['angle']), hook: text(plan['hook']), linkMissing: plan['linkMissing'] === true };
+}
 
 /** Spacing between registrations for one user, so a double click cannot create the same publication twice. */
 async function tooSoon(db: SupabaseClient, userId: string) {
@@ -31,12 +37,13 @@ const log = (db: SupabaseClient, userId: string, action: string, result: string,
 
 export const getPostsOverview = createServerFn({ method: 'GET' }).middleware([requireSupabaseAuth]).handler(async ({ context }): Promise<PostsOverview> => {
   const db = await admin(); const userId = context.userId;
-  const [account, products, posts, heartbeat, aiConnection] = await Promise.all([
+  const [account, products, posts, heartbeat, aiConnection, mediaConnection] = await Promise.all([
     db.from('instagram_accounts').select('id,username,status').eq('user_id', userId).order('created_at', { ascending: true }).limit(1).maybeSingle(),
     db.from('products').select('id,title').eq('user_id', userId).order('collected_at', { ascending: false }).limit(200),
-    db.from('posts').select('id,format,status,scheduled_at,published_at,caption,error,product_id,attempts,created_at,source,ai_plan').eq('user_id', userId).order('created_at', { ascending: false }).limit(50),
+    db.from('posts').select('id,format,status,scheduled_at,published_at,caption,error,product_id,attempts,source,ai_plan,affiliate_link,created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(50),
     db.from('connector_runtime').select('next_allowed_at').eq('scope', HEARTBEAT_SCOPE).maybeSingle(),
-    db.from('ai_connections').select('credential_id').eq('user_id', userId).maybeSingle(),
+    db.from('ai_connections').select('status,credential_id').eq('user_id', userId).maybeSingle(),
+    db.from('media_connections').select('status,credential_id').eq('user_id', userId).maybeSingle(),
   ]);
   if (account.error || products.error || posts.error) throw new Error('Não foi possível carregar suas publicações. Tente de novo.');
   const postRows = (posts.data ?? []) as Row[];
@@ -63,21 +70,19 @@ export const getPostsOverview = createServerFn({ method: 'GET' }).middleware([re
     mediaOf.set(text(link['post_id']), list);
   }
   const acc = account.data as Row | null;
-  const planOf = (row: Row): AiPlanView | null => {
-    const plan = row['ai_plan'];
-    if (!plan || typeof plan !== 'object' || Array.isArray(plan)) return null;
-    const data = plan as Row;
-    return { angle: textOrNull(data['angle']), reason: textOrNull(data['reason']), linkMissing: data['linkMissing'] === true };
-  };
+  const aiRow = (aiConnection.data ?? null) as Row | null;
+  const mediaRow = (mediaConnection.data ?? null) as Row | null;
   return {
+    ai: {
+      connected: Boolean(aiRow && textOrNull(aiRow['credential_id']) && text(aiRow['status']) === 'connected'),
+      videoReady: Boolean(aiRow && textOrNull(aiRow['credential_id']) && text(aiRow['status']) === 'connected' && mediaRow && textOrNull(mediaRow['credential_id']) && text(mediaRow['status']) === 'connected'),
+    },
     scheduler: { lastVisitAt: textOrNull(((heartbeat.data ?? null) as Row | null)?.['next_allowed_at']) },
     account: acc ? { username: textOrNull(acc['username']), status: text(acc['status']) } : null,
-    ai: { connected: Boolean(((aiConnection.data ?? null) as Row | null)?.['credential_id']) },
     products: ((products.data ?? []) as Row[]).map(row => ({ id: text(row['id']), title: text(row['title']) })),
     posts: postRows.map(row => ({
-      id: text(row['id']), format: text(row['format']), status: text(row['status']), attempts: Number(row['attempts'] ?? 0), scheduledAt: textOrNull(row['scheduled_at']), publishedAt: textOrNull(row['published_at']),
-      caption: text(row['caption']), productTitle: titleOf.get(text(row['product_id'])) ?? 'Produto removido', error: textOrNull(row['error']),
-      source: text(row['source']) || 'manual', aiPlan: planOf(row), media: mediaOf.get(text(row['id'])) ?? [],
+      id: text(row['id']), format: text(row['format']), status: text(row['status']), attempts: Number(row['attempts'] ?? 0), source: text(row['source']) || 'manual', aiPlan: aiPlanOf(row['ai_plan']), hasLink: Boolean(textOrNull(row['affiliate_link'])), scheduledAt: textOrNull(row['scheduled_at']), publishedAt: textOrNull(row['published_at']),
+      caption: text(row['caption']), productTitle: titleOf.get(text(row['product_id'])) ?? 'Produto removido', error: textOrNull(row['error']), media: mediaOf.get(text(row['id'])) ?? [],
     })),
   };
 });
@@ -104,7 +109,7 @@ export const createManualPost = createServerFn({ method: 'POST' }).middleware([r
       if (data.media.some(item => !ownsMediaPath(item.path, userId))) return { status: 'error', message: 'Esses arquivos não pertencem à sua conta. Envie de novo.' };
 
       const { data: account } = await db.from('instagram_accounts').select('id,status').eq('user_id', userId).order('created_at', { ascending: true }).limit(1).maybeSingle();
-      if (!account || text((account as Row)['status']) === 'disconnected') return { status: 'error', message: 'Conecte o Instagram na tela Conexões antes de criar publicações.' };
+      if (!account) return { status: 'error', message: 'Conecte o Instagram na tela Conexões antes de criar publicações.' };
       const { data: product } = await db.from('products').select('id').eq('user_id', userId).eq('id', data.productId).maybeSingle();
       if (!product) return { status: 'error', message: 'Não encontrei esse produto. Escolha outro da lista.' };
 
@@ -174,34 +179,33 @@ export const queuePostNow = createServerFn({ method: 'POST' }).middleware([requi
     } catch { return { status: 'error', message: 'Não foi possível colocar na fila agora. Tente de novo.' }; }
   });
 
-/** Schedules a draft (or moves a scheduled post) to the chosen time. */
-export const schedulePostAt = createServerFn({ method: 'POST' }).middleware([requireSupabaseAuth])
-  .inputValidator(input => z.object({ postId: z.string().uuid(), scheduledAt: z.string().datetime({ offset: true }) }).parse(input)).handler(async ({ context, data }): Promise<PostActionResult> => {
+/** The user edits the text of a draft before approving it. */
+export const updateDraftCaption = createServerFn({ method: 'POST' }).middleware([requireSupabaseAuth])
+  .inputValidator(input => z.object({ postId: z.string().uuid(), caption: z.string().trim().max(MAX_CAPTION, `A legenda pode ter no máximo ${MAX_CAPTION} caracteres.`) }).parse(input))
+  .handler(async ({ context, data }): Promise<PostActionResult> => {
     const db = await admin(); const userId = context.userId;
     try {
-      const scheduleProblem = checkSchedule(data.scheduledAt);
-      if (scheduleProblem) return { status: 'error', message: scheduleProblem };
+      const { data: changed, error } = await db.from('posts').update({ caption: data.caption || null }).eq('id', data.postId).eq('user_id', userId).eq('status', 'draft').select('id');
+      if (error) return { status: 'error', message: 'Não foi possível salvar a legenda agora. Tente de novo.' };
+      if (!changed?.length) return { status: 'error', message: 'Só dá para editar a legenda de rascunhos.' };
+      return { status: 'ok', message: 'Legenda salva.' };
+    } catch { return { status: 'error', message: 'Não foi possível salvar a legenda agora. Tente de novo.' }; }
+  });
+
+/** Approves a draft (or changes the time of a scheduled post): it will be published at the chosen time, within the daily limit. */
+export const schedulePostAt = createServerFn({ method: 'POST' }).middleware([requireSupabaseAuth])
+  .inputValidator(input => z.object({ postId: z.string().uuid(), scheduledAt: z.string().datetime() }).parse(input)).handler(async ({ context, data }): Promise<PostActionResult> => {
+    const db = await admin(); const userId = context.userId;
+    try {
+      const problem = checkSchedule(data.scheduledAt);
+      if (problem) return { status: 'error', message: problem };
       const { data: account } = await db.from('instagram_accounts').select('status').eq('user_id', userId).order('created_at', { ascending: true }).limit(1).maybeSingle();
       if (!account || text((account as Row)['status']) !== 'connected') return { status: 'error', message: 'Reconecte o Instagram na tela Conexões antes de agendar.' };
       const { data: changed, error } = await db.from('posts').update({ status: 'scheduled', scheduled_at: data.scheduledAt, attempts: 0, error: null })
         .eq('id', data.postId).eq('user_id', userId).in('status', ['draft', 'scheduled']).select('id');
       if (error) return { status: 'error', message: 'Não foi possível agendar agora. Tente de novo.' };
-      if (!changed?.length) return { status: 'error', message: 'Só dá para agendar rascunhos e publicações já agendadas.' };
+      if (!changed?.length) return { status: 'error', message: 'Só dá para agendar rascunhos e publicações agendadas.' };
       await log(db, userId, 'Publicação agendada', 'Agendada pelo usuário', { post_id: data.postId, scheduled_at: data.scheduledAt });
       return { status: 'ok', message: 'Publicação agendada.' };
     } catch { return { status: 'error', message: 'Não foi possível agendar agora. Tente de novo.' }; }
-  });
-
-/** Edits the caption of a draft. Published or queued posts are not touched. */
-export const updateDraftCaption = createServerFn({ method: 'POST' }).middleware([requireSupabaseAuth])
-  .inputValidator(input => z.object({ postId: z.string().uuid(), caption: z.string().max(MAX_CAPTION, `A legenda pode ter no máximo ${MAX_CAPTION} caracteres.`) }).parse(input)).handler(async ({ context, data }): Promise<PostActionResult> => {
-    const db = await admin(); const userId = context.userId;
-    try {
-      const { data: changed, error } = await db.from('posts').update({ caption: data.caption.trim() })
-        .eq('id', data.postId).eq('user_id', userId).eq('status', 'draft').select('id');
-      if (error) return { status: 'error', message: 'Não foi possível salvar a legenda agora. Tente de novo.' };
-      if (!changed?.length) return { status: 'error', message: 'Só dá para editar a legenda de rascunhos.' };
-      await log(db, userId, 'Legenda editada', 'Legenda do rascunho atualizada', { post_id: data.postId });
-      return { status: 'ok', message: 'Legenda salva.' };
-    } catch { return { status: 'error', message: 'Não foi possível salvar a legenda agora. Tente de novo.' }; }
   });
