@@ -35,8 +35,8 @@ export function validateMedia(format: PostFormat, kinds: readonly MediaKind[]): 
   return null;
 }
 
-export const POST_STATUSES = ['draft', 'scheduled', 'publishing', 'published', 'failed', 'canceled'] as const;
-export const STATUS_LABELS: Record<string, string> = { draft: 'Rascunho', scheduled: 'Agendada', publishing: 'Publicando', published: 'Publicada', failed: 'Falhou', canceled: 'Cancelada' };
+export const POST_STATUSES = ['draft', 'rendering', 'scheduled', 'publishing', 'published', 'failed', 'canceled'] as const;
+export const STATUS_LABELS: Record<string, string> = { draft: 'Rascunho', rendering: 'Gerando vídeo', scheduled: 'Agendada', publishing: 'Publicando', published: 'Publicada', failed: 'Falhou', canceled: 'Cancelada' };
 export const CANCELABLE_STATUSES = ['draft', 'scheduled'] as const;
 
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
