@@ -7,7 +7,7 @@ import {
 } from './instagram-publish.server';
 import { FORMAT_LABELS, MEDIA_BUCKET, validateMedia, type PostFormat } from './posts';
 import {
-  DEFAULT_PUBLISH_SETTINGS, HEARTBEAT_SCOPE, STUCK_AFTER_MS, dayBounds, effectiveDailyLimit, failureMessage, nextDayWindowStart, retryDelayMs, type PublishSettings,
+  DEFAULT_PUBLISH_SETTINGS, HEARTBEAT_SCOPE, MAX_PUBLISH_TRIES, STUCK_AFTER_MS, dayBounds, effectiveDailyLimit, failureMessage, nextDayWindowStart, retryDelayMs, type PublishSettings,
 } from './publishing';
 
 type Db = SupabaseClient;
@@ -28,7 +28,7 @@ function parseState(value: unknown): PublishState | null {
   if (!value || typeof value !== 'object') return null;
   const s = value as Record<string, unknown>;
   if (typeof s['startedAt'] !== 'number') return null;
-  if (s['phase'] === 'container' && typeof s['containerId'] === 'string') return { phase: 'container', containerId: s['containerId'], startedAt: s['startedAt'] };
+  if (s['phase'] === 'container' && typeof s['containerId'] === 'string') return { phase: 'container', containerId: s['containerId'], startedAt: s['startedAt'], ...(typeof s['publishTries'] === 'number' ? { publishTries: s['publishTries'] } : {}) };
   if (s['phase'] === 'children' && Array.isArray(s['children']) && s['children'].every(id => typeof id === 'string')) return { phase: 'children', children: s['children'] as string[], startedAt: s['startedAt'] };
   return null;
 }
@@ -111,6 +111,14 @@ export async function runPublishTick(db: Db, options: { masterKey: string; fetch
     result.retried++;
   }
 
+  /** Instagram never confirmed a publish that was tried: give up WITHOUT starting over, and tell the user to look at the profile first. */
+  async function failUnconfirmed(post: Post) {
+    const message = failureMessage('unconfirmed');
+    await db.from('posts').update({ status: 'failed', error: message, publish_state: null }).eq('id', post.id).eq('user_id', post.user_id);
+    await log(post, 'Publicação sem confirmação', message, { attempts: post.attempts });
+    result.failed++;
+  }
+
   /** A publication that Instagram is already processing: check it and take the next step. */
   async function advance(post: Post) {
     result.checked++;
@@ -129,11 +137,33 @@ export async function runPublishTick(db: Db, options: { masterKey: string; fetch
         return;
       }
       const status = await containerStatus(fetcher, token, state.containerId);
+      const attempted = (state.publishTries ?? 0) > 0;
       if (status.code === 'PUBLISHED') { await succeed(post, null); return; }
-      if (status.code === 'FINISHED') { await succeed(post, await publishContainer(fetcher, { token, igUserId, containerId: state.containerId })); return; }
-      if (status.code === 'ERROR' || status.code === 'EXPIRED') { await fail(post, new PublishError('processing', status.detail)); return; }
-      if (tooOld(state.startedAt)) await fail(post, new PublishError('timeout'));
-    } catch (error) { await fail(post, error); }
+      if (status.code === 'FINISHED') {
+        const tries = state.publishTries ?? 0;
+        if (tries >= MAX_PUBLISH_TRIES) { await failUnconfirmed(post); return; }
+        // Written BEFORE the call: from here on, whatever happens, no new container may be created for this publication,
+        // because Instagram may already have published it even if its answer never reaches us.
+        // The step is claimed only if nobody else touched the post since it was read: if two visits of the scheduler overlap, only one of them publishes.
+        const claimed = await db.from('posts').update({ publish_state: { ...state, publishTries: tries + 1 } }).eq('id', post.id).eq('user_id', post.user_id).eq('status', 'publishing').eq('updated_at', post.updated_at).select('id');
+        if (!claimed.data?.length) return;
+        try { await succeed(post, await publishContainer(fetcher, { token, igUserId, containerId: state.containerId })); }
+        catch (error) {
+          if (error instanceof PublishError && error.kind === 'auth') throw error; // the key was refused, so nothing was published: the normal pause applies
+          await note(post, failureMessage('checking')); // the next visit asks Instagram if it went out, and only repeats the publish call if it did not
+        }
+        return;
+      }
+      if (status.code === 'ERROR' || status.code === 'EXPIRED') { if (attempted) await failUnconfirmed(post); else await fail(post, new PublishError('processing', status.detail)); return; }
+      if (tooOld(state.startedAt)) { if (attempted) await failUnconfirmed(post); else await fail(post, new PublishError('timeout')); }
+    } catch (error) {
+      // After a publish try, a problem while checking is never a reason to start over: it would publish a second copy.
+      if ((state.phase === 'container' && (state.publishTries ?? 0) > 0) && !(error instanceof PublishError && error.kind === 'auth')) {
+        if (tooOld(state.startedAt)) await failUnconfirmed(post); else await note(post, failureMessage('checking'));
+        return;
+      }
+      await fail(post, error);
+    }
   }
 
   /** A scheduled publication whose time has come: check the rules, claim it and ask Instagram to receive the files. */

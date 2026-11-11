@@ -10,6 +10,8 @@ export const DEFAULT_PUBLISH_SETTINGS: PublishSettings = {
   warmup_initial_days: 3, warmup_initial_limit: 1, warmup_second_end_day: 7, warmup_second_limit: 2,
 };
 
+/** How many times the final "publish" call is repeated for one container when Instagram does not confirm it. A new container is never created after the first try. */
+export const MAX_PUBLISH_TRIES = 5;
 /** A publication that stays "publishing" this long without finishing is given up on. */
 export const STUCK_AFTER_MS = 30 * 60_000;
 export const HEARTBEAT_SCOPE = 'publish-heartbeat';
@@ -54,13 +56,15 @@ export function nextDayWindowStart(ms: number, timeZone: string, windowStart: st
 /** Waiting time before another attempt: 5 minutes after the first failure, 10 after the second, and so on. */
 export const retryDelayMs = (attempt: number) => Math.min(Math.max(attempt, 1), 6) * 5 * 60_000;
 
-export type FailureKind = 'auth' | 'network' | 'meta' | 'timeout' | 'invalid' | 'processing';
+export type FailureKind = 'auth' | 'network' | 'meta' | 'timeout' | 'invalid' | 'processing' | 'unconfirmed' | 'checking';
 export function failureMessage(kind: FailureKind, detail = ''): string {
   const extra = detail ? ` (${detail.slice(0, 160)})` : '';
   switch (kind) {
     case 'auth': return 'A conexão com o Instagram expirou. Reconecte na tela Conexões e a publicação continua sozinha.';
     case 'network': return 'O Instagram não respondeu agora.';
     case 'timeout': return 'O Instagram demorou demais para processar o arquivo.';
+    case 'unconfirmed': return 'O Instagram não confirmou a publicação, e ela pode ter saído. Confira o seu perfil antes de tentar de novo, para não duplicar.';
+    case 'checking': return 'O Instagram não confirmou ainda se a publicação saiu. Vou verificar de novo, sem criar outra.';
     case 'processing': return `O Instagram não conseguiu processar o arquivo${extra}.`;
     case 'invalid': return `Os arquivos desta publicação não servem para este formato${extra}.`;
     default: return `O Instagram recusou a publicação${extra}.`;

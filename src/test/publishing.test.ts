@@ -42,6 +42,7 @@ describe('scheduling rules', () => {
 });
 
 type Rows = Record<string, unknown>[];
+let bumps = 0; // stands in for the database trigger that changes updated_at on every update
 function memoryDb(seed: Record<string, Rows>) {
   const tables: Record<string, Rows> = Object.fromEntries(Object.entries(seed).map(([name, rows]) => [name, rows.map(row => ({ ...row }))]));
   const from = (name: string) => {
@@ -53,7 +54,7 @@ function memoryDb(seed: Record<string, Rows>) {
     const run = () => {
       if (op === 'insert') { all().push(...(Array.isArray(payload) ? payload : [payload]).map(row => ({ ...(row as object) }))); return { data: null, error: null }; }
       if (op === 'upsert') { const row = { ...(payload as Record<string, unknown>) }; const found = all().find(r => r[key] === row[key]); if (found) Object.assign(found, row); else all().push(row); return { data: null, error: null }; }
-      if (op === 'update') { const touched = hits(); touched.forEach(row => Object.assign(row, payload)); return { data: touched.map(row => ({ ...row })), error: null }; }
+      if (op === 'update') { const touched = hits(); touched.forEach(row => { Object.assign(row, payload); if (name === 'posts' && 'updated_at' in row) row['updated_at'] = new Date(Date.UTC(2030, 0, 1) + ++bumps * 1000).toISOString(); }); return { data: touched.map(row => ({ ...row })), error: null }; }
       if (op === 'delete') { const gone = new Set(hits()); tables[name] = all().filter(row => !gone.has(row)); return { data: null, error: null }; }
       let found = hits();
       if (order) { const { col, asc } = order; found = [...found].sort((a, b) => (String(a[col]) < String(b[col]) ? -1 : 1) * (asc ? 1 : -1)); }
@@ -84,7 +85,7 @@ function memoryDb(seed: Record<string, Rows>) {
 }
 
 type Call = { method: string; path: string; params: Record<string, string>; auth: string | null };
-function scriptedInstagram(respond: (call: Call, index: number) => { status?: number; json: unknown }) {
+function scriptedInstagram(respond: (call: Call, index: number) => { status?: number; json?: unknown; throws?: Error }) {
   const calls: Call[] = [];
   const fetcher = (async (input: URL | string, init?: RequestInit) => {
     const url = new URL(String(input));
@@ -95,7 +96,8 @@ function scriptedInstagram(respond: (call: Call, index: number) => { status?: nu
     };
     calls.push(call);
     const reply = respond(call, calls.length - 1);
-    return new Response(JSON.stringify(reply.json), { status: reply.status ?? 200 });
+    if (reply.throws) throw reply.throws;
+    return new Response(JSON.stringify(reply.json ?? {}), { status: reply.status ?? 200 });
   }) as typeof fetch;
   return { fetcher, calls };
 }
@@ -259,5 +261,92 @@ describe('publisher: failures', () => {
       const ig = noCalls(); const result = await tick(db, ig.fetcher);
       expect(result.paused).toBe(1); expect(row(tables)).toMatchObject({ status: 'scheduled', attempts: 0 });
     } finally { control.tokenOk = true; }
+  });
+});
+
+describe('publisher: never publishing twice', () => {
+  const containers = (calls: Call[]) => calls.filter(call => call.method === 'POST' && call.path === '/ig1/media');
+  const publishes = (calls: Call[]) => calls.filter(call => call.path.endsWith('media_publish'));
+  const afterTry = (extra: Record<string, unknown> = {}) => post({ status: 'publishing', attempts: 1, updated_at: iso(NOW - 60_000), publish_state: { phase: 'container', containerId: 'c1', startedAt: NOW - 60_000, publishTries: 1 }, ...extra });
+
+  it('does not create a second container when the answer to the publish call is lost', async () => {
+    const { tables, db } = memoryDb(base());
+    let tried = 0;
+    const ig = scriptedInstagram(call => {
+      if (call.method === 'POST' && call.path === '/ig1/media') return { json: { id: 'c1' } };
+      if (call.path.endsWith('media_publish')) { tried++; return { throws: new TypeError('fetch failed') }; }
+      return { json: { status_code: tried > 0 ? 'PUBLISHED' : 'FINISHED' } }; // it was published even though we never heard back
+    });
+    await tick(db, ig.fetcher);
+    await tick(db, ig.fetcher, NOW + 60_000);
+    expect(row(tables)).toMatchObject({ status: 'publishing', attempts: 1, publish_state: { phase: 'container', containerId: 'c1', publishTries: 1 } });
+    expect(String(row(tables)['error'])).toMatch(/sem criar outra/);
+    await tick(db, ig.fetcher, NOW + 120_000);
+    expect(row(tables)).toMatchObject({ status: 'published', publish_state: null, error: null });
+    expect(containers(ig.calls)).toHaveLength(1); expect(publishes(ig.calls)).toHaveLength(1);
+  });
+  it('repeats only the publish call, never the container, when Instagram answers with an error', async () => {
+    const { tables, db } = memoryDb(base());
+    let tried = 0;
+    const ig = scriptedInstagram(call => {
+      if (call.method === 'POST' && call.path === '/ig1/media') return { json: { id: 'c1' } };
+      if (call.path.endsWith('media_publish')) { tried++; return tried === 1 ? { status: 500, json: { error: { code: 2, message: 'An unexpected error has occurred. Please retry your request later.' } } } : { json: { id: 'm9' } }; }
+      return { json: { status_code: 'FINISHED' } };
+    });
+    for (let i = 0; i < 3; i++) await tick(db, ig.fetcher, NOW + i * 60_000);
+    expect(row(tables)).toMatchObject({ status: 'published', ig_media_id: 'm9', attempts: 1 });
+    expect(containers(ig.calls)).toHaveLength(1); expect(publishes(ig.calls)).toHaveLength(2);
+  });
+  it('stops after too many publish tries without creating another container, and asks the user to look at the profile', async () => {
+    const { tables, db } = memoryDb(base());
+    const ig = scriptedInstagram(call => {
+      if (call.method === 'POST' && call.path === '/ig1/media') return { json: { id: 'c1' } };
+      if (call.path.endsWith('media_publish')) return { status: 500, json: { error: { code: 2, message: 'An unexpected error has occurred.' } } };
+      return { json: { status_code: 'FINISHED' } };
+    });
+    for (let i = 0; i < 8; i++) await tick(db, ig.fetcher, NOW + i * 60_000);
+    expect(row(tables)).toMatchObject({ status: 'failed', attempts: 1, publish_state: null });
+    expect(String(row(tables)['error'])).toMatch(/pode ter saído/);
+    expect(containers(ig.calls)).toHaveLength(1); expect(publishes(ig.calls)).toHaveLength(5);
+    expect(tables['activity_log']?.some(entry => entry['action'] === 'Publicação sem confirmação')).toBe(true);
+  });
+  it('a failed check after a publish try never starts over, and gives up only after the time limit', async () => {
+    const { tables, db } = memoryDb(base({ posts: [afterTry()] }));
+    const ig = scriptedInstagram(() => ({ throws: new TypeError('fetch failed') }));
+    await tick(db, ig.fetcher);
+    expect(row(tables)).toMatchObject({ status: 'publishing', publish_state: { publishTries: 1 } }); expect(String(row(tables)['error'])).toMatch(/sem criar outra/);
+    await tick(db, ig.fetcher, NOW + 31 * 60_000);
+    expect(row(tables)).toMatchObject({ status: 'failed' }); expect(String(row(tables)['error'])).toMatch(/pode ter saído/); expect(containers(ig.calls)).toHaveLength(0);
+  });
+  it('a container error after a publish try is not retried with a new container', async () => {
+    const { tables, db } = memoryDb(base({ posts: [afterTry()] }));
+    const ig = scriptedInstagram(() => ({ json: { status_code: 'ERROR', status: 'Error' } }));
+    await tick(db, ig.fetcher);
+    expect(row(tables)).toMatchObject({ status: 'failed' }); expect(String(row(tables)['error'])).toMatch(/pode ter saído/);
+    expect(containers(ig.calls)).toHaveLength(0); expect(publishes(ig.calls)).toHaveLength(0);
+  });
+  it('a refused key at the publish call pauses, because nothing was published', async () => {
+    const { tables, db } = memoryDb(base());
+    const ig = scriptedInstagram(call => {
+      if (call.method === 'POST' && call.path === '/ig1/media') return { json: { id: 'c1' } };
+      if (call.path.endsWith('media_publish')) return { status: 400, json: { error: { code: 190, message: 'Invalid OAuth access token' } } };
+      return { json: { status_code: 'FINISHED' } };
+    });
+    await tick(db, ig.fetcher); const result = await tick(db, ig.fetcher, NOW + 60_000);
+    expect(result.paused).toBeGreaterThanOrEqual(1); expect(tables['instagram_accounts']?.[0]?.['status']).toBe('expired');
+    expect(row(tables)).toMatchObject({ status: 'scheduled', attempts: 0, publish_state: null });
+  });
+  it('a container that fails before any publish try is still retried with a new one, as before', async () => {
+    const { tables, db } = memoryDb(base({ posts: [post({ status: 'publishing', attempts: 1, updated_at: iso(NOW - 60_000), publish_state: { phase: 'container', containerId: 'c1', startedAt: NOW - 60_000 } })] }));
+    const ig = scriptedInstagram(() => ({ json: { status_code: 'ERROR', status: 'Error' } }));
+    const result = await tick(db, ig.fetcher);
+    expect(result.retried).toBe(1); expect(row(tables)).toMatchObject({ status: 'scheduled', publish_state: null });
+  });
+  it('two overlapping visits of the scheduler publish only once', async () => {
+    const { tables, db } = memoryDb(base({ posts: [afterTry({ publish_state: { phase: 'container', containerId: 'c1', startedAt: NOW - 60_000 } })] }));
+    const ig = scriptedInstagram(call => (call.path.endsWith('media_publish') ? { json: { id: 'm1' } } : { json: { status_code: 'FINISHED' } }));
+    await Promise.all([tick(db, ig.fetcher, NOW + 60_000), tick(db, ig.fetcher, NOW + 60_000)]);
+    expect(publishes(ig.calls)).toHaveLength(1); expect(containers(ig.calls)).toHaveLength(0);
+    expect(row(tables)).toMatchObject({ status: 'published', ig_media_id: 'm1' });
   });
 });

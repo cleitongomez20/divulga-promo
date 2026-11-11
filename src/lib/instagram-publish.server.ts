@@ -10,15 +10,15 @@ export type PublishItem = { url: string; kind: MediaKind };
 /** Where a publication is, between the visits of the scheduler. Saved in posts.publish_state. */
 export type PublishState =
   | { phase: 'children'; children: string[]; startedAt: number }
-  | { phase: 'container'; containerId: string; startedAt: number };
+  | { phase: 'container'; containerId: string; startedAt: number; publishTries?: number };
 
 export class PublishError extends Error {
   constructor(readonly kind: FailureKind, readonly detail = '', readonly code: number | null = null) { super(kind); }
 }
 
-async function call(fetcher: Fetcher, method: 'GET' | 'POST', path: string, token: string, params: Record<string, string> = {}): Promise<Record<string, unknown>> {
+async function call(fetcher: Fetcher, method: 'GET' | 'POST', path: string, token: string, params: Record<string, string> = {}, timeoutMs = 10_000): Promise<Record<string, unknown>> {
   const url = new URL(`${GRAPH}${path}`);
-  const init: RequestInit = { method, headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10_000), redirect: 'manual' };
+  const init: RequestInit = { method, headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(timeoutMs), redirect: 'manual' };
   if (method === 'GET') for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
   else init.body = new URLSearchParams(params);
   let res: Response; let raw: string;
@@ -83,5 +83,6 @@ export async function containerStatus(fetcher: Fetcher, token: string, container
 }
 /** Last step: makes the ready container public. Returns the id of the Instagram post. */
 export async function publishContainer(fetcher: Fetcher, p: { token: string; igUserId: string; containerId: string }): Promise<string> {
-  return idOf(await call(fetcher, 'POST', `/${encodeURIComponent(p.igUserId)}/media_publish`, p.token, { creation_id: p.containerId }));
+  // Publishing a video can take longer than the other calls, so it gets more time before the app stops waiting for the answer.
+  return idOf(await call(fetcher, 'POST', `/${encodeURIComponent(p.igUserId)}/media_publish`, p.token, { creation_id: p.containerId }, 25_000));
 }
