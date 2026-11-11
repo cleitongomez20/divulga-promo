@@ -1,11 +1,11 @@
 import { createFileRoute } from '@tanstack/react-router';
 import { useServerFn } from '@tanstack/react-start';
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { Search, Star, Copy, Check, ExternalLink, Link2, LoaderCircle, FlaskConical, ShoppingBag, X } from 'lucide-react';
+import { Search, Star, Copy, Check, ExternalLink, LoaderCircle, FlaskConical, ShoppingBag, X } from 'lucide-react';
 import { WorkspaceShell } from '@/components/workspace-shell';
 import { Button } from '@/components/ui/button';
 import { pageHead } from '@/lib/metadata';
-import { searchProducts, createTestLink } from '@/lib/products.functions';
+import { searchProducts, createAffiliateLink } from '@/lib/products.functions';
 import { SORTS, formatPercent, formatMoney, priceText, sortProducts, type ProductItem } from '@/lib/products';
 
 export const Route = createFileRoute('/_authenticated/produtos')({
@@ -14,17 +14,26 @@ export const Route = createFileRoute('/_authenticated/produtos')({
 });
 
 type Criteria = { keyword: string; category: number | undefined };
-type LinkState = { busy?: boolean; url?: string; error?: string; copied?: boolean };
+type LinkState = { url?: string; error?: string };
+type CopyState = 'busy' | 'copied';
 type Cached = { items: ProductItem[]; page: number; hasNext: boolean; simulated: boolean; at: number };
 const inputClass = 'h-11 w-full rounded-md border bg-background px-3 text-base';
 const FRESH_MS = 10 * 60 * 1000;
 // The recommended list is remembered for a few minutes, so coming back to this page does not call the Shopee again.
 let recommendedCache: Cached | null = null;
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+const LINK_GAP_MS = 3200; // the server keeps at least 3 seconds between link requests
+// Affiliate links already made, remembered while the page stays open so nothing is generated twice.
+const linkCache = new Map<string, string>();
+const inflight = new Map<string, Promise<string | null>>();
+let linkChain: Promise<unknown> = Promise.resolve();
+let lastLinkAt = 0;
 
 function ProductsPage() {
   const search = useServerFn(searchProducts);
-  const makeLink = useServerFn(createTestLink);
+  const makeLinkFn = useServerFn(createAffiliateLink);
+  const makeLinkRef = useRef(makeLinkFn);
+  makeLinkRef.current = makeLinkFn;
   const [keyword, setKeyword] = useState('');
   const [category, setCategory] = useState('');
   const [sortType, setSortType] = useState(2);
@@ -37,13 +46,20 @@ function ProductsPage() {
   const [simulated, setSimulated] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [links, setLinks] = useState<Record<string, LinkState>>({});
+  const [copyUi, setCopyUi] = useState<Record<string, CopyState>>({});
+  const visible = useRef(new Set<string>());
+  const observer = useRef<IntersectionObserver | null>(null);
+  const sentinel = useRef<HTMLDivElement | null>(null);
+  const loadingRef = useRef(true);
+  const stopped = useRef(false); // set after a failed page, so scrolling does not keep retrying by itself
   const itemsRef = useRef<ProductItem[]>([]);
   const started = useRef(false);
+  const failedLinks = useRef(new Set<string>());
   const filtered = Boolean(criteria.keyword || criteria.category);
   const shown = useMemo(() => sortProducts(items, sortType), [items, sortType]);
 
   async function run(nextPage: number, used: Criteria, sort: number, attempt = 0): Promise<void> {
-    setLoading(true); setMessage('');
+    setLoading(true); loadingRef.current = true; setMessage(''); if (nextPage === 1) stopped.current = false;
     try {
       const result = await search({ data: { sortType: sort, page: nextPage, ...(used.keyword ? { keyword: used.keyword } : {}), ...(used.category ? { productCatId: used.category } : {}) } });
       if (result.status === 'ok') {
@@ -55,9 +71,9 @@ function ProductsPage() {
         setMessage('Só um instante, buscando os produtos...');
         await sleep((result.waitSeconds ?? 2) * 1000 + 300);
         return run(nextPage, used, sort, attempt + 1);
-      } else setMessage(result.message);
-    } catch { setMessage('Não foi possível buscar produtos agora. Tente de novo em instantes.'); }
-    finally { setLoading(false); }
+      } else { setMessage(result.message); stopped.current = true; }
+    } catch { setMessage('Não foi possível buscar produtos agora. Tente de novo em instantes.'); stopped.current = true; }
+    finally { setLoading(false); loadingRef.current = false; }
   }
 
   function showRecommended() {
@@ -65,7 +81,7 @@ function ProductsPage() {
     setCriteria(used); setLinks({});
     if (recommendedCache && Date.now() - recommendedCache.at < FRESH_MS) {
       itemsRef.current = recommendedCache.items;
-      setItems(recommendedCache.items); setPage(recommendedCache.page); setHasNext(recommendedCache.hasNext); setSimulated(recommendedCache.simulated); setLoaded(true); setLoading(false); setMessage('');
+      setItems(recommendedCache.items); setPage(recommendedCache.page); setHasNext(recommendedCache.hasNext); setSimulated(recommendedCache.simulated); setLoaded(true); setLoading(false); loadingRef.current = false; setMessage('');
     } else void run(1, used, sortType);
   }
   // The recommended products are shown as soon as the page opens, without pressing any button.
@@ -85,20 +101,73 @@ function ProductsPage() {
     // With a keyword or category the Shopee sorts the whole list; otherwise the order is applied here, to what is loaded.
     if (filtered) void run(1, criteria, value);
   }
-  async function generate(item: ProductItem) {
-    setLinks(previous => ({ ...previous, [item.itemId]: { busy: true } }));
-    try {
-      const result = await makeLink({ data: { productLink: item.productLink, itemId: item.itemId } });
-      setLinks(previous => ({ ...previous, [item.itemId]: result.status === 'ok' ? { url: result.shortLink } : { error: result.message } }));
-    } catch { setLinks(previous => ({ ...previous, [item.itemId]: { error: 'Não foi possível gerar o link agora.' } })); }
+  /** Makes the affiliate link for one product. Requests go one at a time, with the pause the server requires, and are never repeated. */
+  function ensureLink(item: ProductItem): Promise<string | null> {
+    const id = item.itemId;
+    const cached = linkCache.get(id); if (cached) return Promise.resolve(cached);
+    const running = inflight.get(id); if (running) return running;
+    const job = linkChain.then(async () => {
+      const ready = linkCache.get(id); if (ready) return ready;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const gap = LINK_GAP_MS - (Date.now() - lastLinkAt); if (gap > 0) await sleep(gap);
+        lastLinkAt = Date.now();
+        try {
+          const result = await makeLinkRef.current({ data: { productLink: item.productLink, itemId: id } });
+          if (result.status === 'ok') { linkCache.set(id, result.shortLink); setLinks(previous => ({ ...previous, [id]: { url: result.shortLink } })); return result.shortLink; }
+          if (result.status === 'wait' && attempt < 2) { await sleep((result.waitSeconds ?? 3) * 1000); continue; }
+          setLinks(previous => ({ ...previous, [id]: { error: result.message } })); return null;
+        } catch { setLinks(previous => ({ ...previous, [id]: { error: 'Não foi possível gerar o link agora.' } })); return null; }
+      }
+      return null;
+    }).finally(() => { inflight.delete(id); });
+    linkChain = job.catch(() => null);
+    inflight.set(id, job);
+    return job;
   }
-  async function copy(item: ProductItem, url: string) {
+  async function copy(item: ProductItem) {
+    const id = item.itemId;
+    setLinks(previous => ({ ...previous, [id]: { ...(previous[id]?.url ? { url: previous[id]?.url } : {}) } })); // clears an old error
+    let url = linkCache.get(id) ?? null;
+    if (!url) { setCopyUi(previous => ({ ...previous, [id]: 'busy' })); url = await ensureLink(item); }
+    if (!url) { setCopyUi(previous => { const { [id]: _drop, ...rest } = previous; return rest; }); return; }
     try {
       await navigator.clipboard.writeText(url);
-      setLinks(previous => ({ ...previous, [item.itemId]: { url, copied: true } }));
-      setTimeout(() => setLinks(previous => ({ ...previous, [item.itemId]: { url } })), 2000);
-    } catch { setLinks(previous => ({ ...previous, [item.itemId]: { url, error: 'Não foi possível copiar sozinho. Toque no link e copie manualmente.' } })); }
+      setCopyUi(previous => ({ ...previous, [id]: 'copied' }));
+      setTimeout(() => setCopyUi(previous => { const { [id]: _drop, ...rest } = previous; return rest; }), 2000);
+    } catch {
+      setCopyUi(previous => { const { [id]: _drop, ...rest } = previous; return rest; });
+      setLinks(previous => ({ ...previous, [id]: { url, error: 'Não foi possível copiar sozinho. Toque no link e copie manualmente.' } }));
+    }
   }
+
+  // Links are prepared ahead of time for the products on screen, one every few seconds, so the button usually copies at once.
+  useEffect(() => {
+    observer.current = new IntersectionObserver(entries => entries.forEach(entry => { const id = (entry.target as HTMLElement).dataset['item']; if (!id) return; if (entry.isIntersecting) visible.current.add(id); else visible.current.delete(id); }), { rootMargin: '200px' });
+    let stop = false;
+    (async () => {
+      while (!stop) {
+        await sleep(800);
+        if (stop || inflight.size) continue;
+        const next = itemsRef.current.find(item => visible.current.has(item.itemId) && !linkCache.has(item.itemId) && !failedLinks.current.has(item.itemId));
+        if (!next) continue;
+        if (!(await ensureLink(next))) failedLinks.current.add(next.itemId);
+      }
+    })();
+    return () => { stop = true; observer.current?.disconnect(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Infinite scroll: when the end of the list gets close, the next page is loaded.
+  useEffect(() => {
+    const node = sentinel.current;
+    if (!node || !hasNext || loading) return;
+    const watcher = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting) && !loadingRef.current && !stopped.current) void run(page + 1, criteria, sortType);
+    }, { rootMargin: '600px' });
+    watcher.observe(node);
+    return () => watcher.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasNext, loading, page, items.length, criteria, sortType]);
 
   const heading = criteria.keyword ? `Resultados para “${criteria.keyword}”` : criteria.category ? `Produtos da categoria ${criteria.category}` : 'Recomendados pela Shopee';
   return <WorkspaceShell>
@@ -130,8 +199,8 @@ function ProductsPage() {
     {items.length > 0 && <>
       <p className="mt-4 text-xs text-muted-foreground">{items.length} {items.length === 1 ? 'produto' : 'produtos'}. A comissão mostrada é a taxa máxima; o valor final aparece na venda.</p>
       <ul className={`mt-3 grid gap-4 transition-opacity lg:grid-cols-2 ${loading ? 'opacity-60' : ''}`}>{shown.map(item => {
-        const link = links[item.itemId];
-        return <li key={item.itemId} className="flex gap-4 rounded-lg border bg-card p-4">
+        const link = links[item.itemId]; const ui = copyUi[item.itemId];
+        return <li key={item.itemId} data-item={item.itemId} ref={el => { if (el) observer.current?.observe(el); }} className="flex gap-4 rounded-lg border bg-card p-4">
           <div className="flex size-24 shrink-0 items-center justify-center overflow-hidden rounded-md bg-muted">{item.imageUrl ? <img src={item.imageUrl} alt="" loading="lazy" referrerPolicy="no-referrer" onError={e => { e.currentTarget.style.display = 'none'; }} className="size-full object-cover" /> : <ShoppingBag className="size-8 text-muted-foreground/60" />}</div>
           <div className="min-w-0 flex-1">
             <h3 className="line-clamp-2 text-sm font-semibold">{item.name}</h3>
@@ -143,15 +212,15 @@ function ProductsPage() {
             </p>
             <p className="mt-1 text-sm font-semibold">{priceText(item)}</p>
             <div className="mt-3 flex flex-wrap gap-2">
-              <Button size="sm" variant="outline" className="min-h-11" onClick={() => void generate(item)} disabled={link?.busy}>{link?.busy ? <LoaderCircle className="animate-spin" /> : <Link2 />}Gerar link de teste</Button>
+              <Button size="sm" variant="outline" className="min-h-11" onClick={() => { failedLinks.current.delete(item.itemId); void copy(item); }} disabled={ui === 'busy'}>{ui === 'busy' ? <LoaderCircle className="animate-spin" /> : ui === 'copied' ? <Check /> : <Copy />}{ui === 'busy' ? 'Gerando link...' : ui === 'copied' ? 'Link copiado' : 'Copiar link de afiliado'}</Button>
               <Button size="sm" variant="ghost" className="min-h-11" asChild><a href={item.productLink} target="_blank" rel="noopener noreferrer"><ExternalLink />Ver na Shopee</a></Button>
             </div>
-            {link?.url && <div className="mt-3 flex gap-2"><input readOnly value={link.url} aria-label="Link de teste" onFocus={e => e.currentTarget.select()} className="h-11 min-w-0 flex-1 rounded-md border bg-background px-3 text-sm" /><Button size="sm" variant="outline" className="min-h-11" onClick={() => void copy(item, link.url as string)}>{link.copied ? <Check /> : <Copy />}{link.copied ? 'Copiado' : 'Copiar'}</Button></div>}
+            {link?.url && link.error && <input readOnly value={link.url} aria-label="Link de afiliado" onFocus={e => e.currentTarget.select()} className="mt-3 h-11 w-full min-w-0 rounded-md border bg-background px-3 text-sm" />}
             {link?.error && <p role="status" className="mt-2 text-xs font-medium">{link.error}</p>}
           </div>
         </li>;
       })}</ul>
-      {hasNext && <div className="mt-6 text-center"><Button variant="outline" className="min-h-11" onClick={() => void run(page + 1, criteria, sortType)} disabled={loading}>{loading ? <LoaderCircle className="animate-spin" /> : null}Ver mais produtos</Button></div>}
+      {hasNext && <div ref={sentinel} className="mt-6 flex h-16 items-center justify-center text-sm text-muted-foreground">{loading ? <span role="status" className="flex items-center gap-2"><LoaderCircle className="size-4 animate-spin" />Carregando mais produtos...</span> : stopped.current ? <Button variant="outline" className="min-h-11" onClick={() => { stopped.current = false; void run(page + 1, criteria, sortType); }}>Tentar de novo</Button> : null}</div>}
     </>}
   </WorkspaceShell>;
 }
