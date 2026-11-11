@@ -28,7 +28,7 @@ vi.mock('@/integrations/supabase/client.server', () => ({
 }));
 vi.mock('@/lib/shopee-sync.server', () => ({ openConnector: async () => { if (state.openError) throw state.openError; return state.connector; } }));
 
-import { createAffiliateLink, searchProducts } from '@/lib/products.functions';
+import { createTestLink, searchProducts } from '@/lib/products.functions';
 
 type Result = { status: string; message?: string; waitSeconds?: number; simulated?: boolean; items?: unknown[]; hasNextPage?: boolean; shortLink?: string };
 const call = (fn: unknown, data: unknown) => (fn as (args: unknown) => Promise<Result>)({ context: { userId: 'user-1' }, data });
@@ -107,8 +107,8 @@ describe('product search', () => {
   });
 });
 
-describe('affiliate link', () => {
-  const link = (extra: Record<string, unknown> = {}) => call(createAffiliateLink, { productLink: 'https://shopee.com.br/product/84499012/17979995178', itemId: '17979995178', ...extra });
+describe('test link', () => {
+  const link = (extra: Record<string, unknown> = {}) => call(createTestLink, { productLink: 'https://shopee.com.br/product/84499012/17979995178', itemId: '17979995178', ...extra });
   it('asks for the safety pause first, 3 seconds per user', async () => {
     connector({ ok: true, data: { generateShortLink: { shortLink: 'https://shope.ee/abc' } } });
     await link();
@@ -123,10 +123,11 @@ describe('affiliate link', () => {
     expect(await link({ productLink: 'https://example.com/p' })).toMatchObject({ status: 'error', message: expect.stringMatching(/Shopee/) });
     expect(state.rpcs).toHaveLength(0); expect(state.queries).toHaveLength(0);
   });
-  it('creates a link tagged with the panel and the product', async () => {
+  it('creates a link marked as test and records it', async () => {
     connector({ ok: true, data: { generateShortLink: { shortLink: 'https://shope.ee/abc' } } });
     expect(await link()).toEqual({ status: 'ok', shortLink: 'https://shope.ee/abc', simulated: false });
-    expect(state.queries[0]).not.toContain('teste'); expect(state.queries[0]).toContain('painel'); expect(state.queries[0]).toContain('17979995178');
+    expect(state.queries[0]).toContain('teste'); expect(state.queries[0]).toContain('painel'); expect(state.queries[0]).toContain('17979995178');
+    expect(state.logs.some(row => row['action'] === 'Link de teste' && row['result'] === 'Link de teste gerado')).toBe(true);
   });
   it('without Shopee credentials, returns an example link marked as simulated', async () => {
     expect(await link()).toMatchObject({ status: 'ok', simulated: true });
@@ -135,6 +136,6 @@ describe('affiliate link', () => {
     connector({ ok: true, data: { generateShortLink: { shortLink: 'https://evil.example.com/x' } } }, failure('Produto indisponível'));
     expect((await link()).status).toBe('error');
     expect(await link()).toMatchObject({ status: 'error', message: 'Produto indisponível' });
-    expect(state.logs.some(row => row['action'] === 'Link de afiliado' && row['result'] === 'Produto indisponível')).toBe(true);
+    expect(state.logs.some(row => row['action'] === 'Link de teste' && row['result'] === 'Produto indisponível')).toBe(true);
   });
 });
