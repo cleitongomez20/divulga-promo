@@ -102,7 +102,7 @@ export const searchProducts = createServerFn({ method: 'POST' })
     }
   });
 
-export const createTestLink = createServerFn({ method: 'POST' })
+export const createAffiliateLink = createServerFn({ method: 'POST' })
   .middleware([requireSupabaseAuth])
   .inputValidator(input => linkSchema.parse(input))
   .handler(async ({ context, data }): Promise<LinkResult> => {
@@ -115,16 +115,15 @@ export const createTestLink = createServerFn({ method: 'POST' })
       if (wait > 0) return { status: 'wait', message: 'Aguarde alguns segundos antes de gerar outro link.', waitSeconds: wait };
       const connector = await openConnector(admin, userId);
       if (!connector) return { status: 'ok', shortLink: 'https://shope.ee/exemplo-simulado', simulated: true };
-      // Test links carry recognisable sub IDs, so a sale from one of them is easy to spot in the sales list.
-      const subIds = encodeSubIds(['teste', 'painel', data.itemId ?? '']);
+      // These links carry recognisable sub IDs, so a sale from one of them is easy to trace in the sales list.
+      const subIds = encodeSubIds(['painel', data.itemId ?? '']);
       const result = await connector.execute({ query: buildShortLinkMutation(data.productLink, subIds) });
       if (!result.ok) {
-        await log(admin, userId, 'Link de teste', result.message, { codes: result.errors.map(e => e.extensions.code) });
+        await log(admin, userId, 'Link de afiliado', result.message, { codes: result.errors.map(e => e.extensions.code) });
         return { status: 'error', message: result.message };
       }
       const shortLink = safeUrl((result.data['generateShortLink'] as { shortLink?: unknown } | null | undefined)?.shortLink);
       if (!shortLink || !isShopeeUrl(shortLink)) return { status: 'error', message: 'A Shopee não devolveu um link válido. Tente de novo.' };
-      await log(admin, userId, 'Link de teste', 'Link de teste gerado', { item_id: data.itemId ?? null });
       return { status: 'ok', shortLink, simulated: false };
     } catch (error) {
       return { status: 'error', message: error instanceof Error && error.message ? error.message : 'Não foi possível gerar o link agora.' };
