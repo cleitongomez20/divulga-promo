@@ -103,6 +103,13 @@ export async function credentialsForJob(db: Db, p: { userId: string; masterKey: 
   if ((await monthMediaSpentMicros(db, p.userId, now())) + p.estimateMicros > capMicros(num(connection['monthly_cap_cents']))) throw new HiggsfieldError('cap');
   return openCredentials(db, p.userId, p.masterKey, credentialId);
 }
+/** Opens the stored key with no cap check: used to follow up on jobs that were already ordered and paid for. */
+export async function openStoredCredentials(db: Db, p: { userId: string; masterKey: string }): Promise<HiggsfieldCredentials> {
+  const connection = await connectionOf(db, p.userId);
+  const credentialId = str(connection?.['credential_id']);
+  if (!connection || !credentialId) throw new HiggsfieldError('not_connected');
+  return openCredentials(db, p.userId, p.masterKey, credentialId);
+}
 /** A rejected key puts the connection in the "invalid" state, so nothing keeps trying with it. */
 export async function markInvalid(db: Db, userId: string) {
   await db.from('media_connections').update({ status: 'invalid', last_error: higgsfieldErrorMessage('auth') }).eq('user_id', userId);
