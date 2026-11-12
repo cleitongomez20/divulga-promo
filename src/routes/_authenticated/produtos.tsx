@@ -16,7 +16,7 @@ export const Route = createFileRoute('/_authenticated/produtos')({
 type Criteria = { keyword: string; category: number | undefined };
 type LinkState = { url?: string; error?: string };
 type CopyState = 'busy' | 'copied';
-type Cached = { items: ProductItem[]; page: number; hasNext: boolean; simulated: boolean; at: number };
+type Cached = { items: ProductItem[]; pages: [string, number][]; page: number; hasNext: boolean; simulated: boolean; at: number };
 const inputClass = 'h-11 w-full rounded-md border bg-background px-3 text-base';
 const FRESH_MS = 10 * 60 * 1000;
 // The recommended list is remembered for a few minutes, so coming back to this page does not call the Shopee again.
@@ -53,17 +53,27 @@ function ProductsPage() {
   const itemsRef = useRef<ProductItem[]>([]);
   const started = useRef(false);
   const filtered = Boolean(criteria.keyword || criteria.category);
-  const shown = useMemo(() => sortProducts(items, sortType), [items, sortType]);
+  const pageOf = useRef(new Map<string, number>()); // which page each product came from
+  const [more, setMore] = useState(false); // a next page is being added below the list
+  // The chosen order is applied inside each loaded page, and pages stay one after the other.
+  // So new products always land below the ones already seen and the screen never jumps.
+  const shown = useMemo(() => {
+    const groups = new Map<number, ProductItem[]>();
+    for (const item of items) { const n = pageOf.current.get(item.itemId) ?? 1; groups.set(n, [...(groups.get(n) ?? []), item]); }
+    return [...groups.keys()].sort((a, b) => a - b).flatMap(n => sortProducts(groups.get(n) ?? [], sortType));
+  }, [items, sortType]);
 
   async function run(nextPage: number, used: Criteria, sort: number, attempt = 0): Promise<void> {
-    setLoading(true); loadingRef.current = true; setMessage(''); if (nextPage === 1) stopped.current = false;
+    setLoading(true); loadingRef.current = true; setMessage(''); setMore(nextPage > 1); if (nextPage === 1) { stopped.current = false; pageOf.current = new Map(); }
     try {
       const result = await search({ data: { sortType: sort, page: nextPage, ...(used.keyword ? { keyword: used.keyword } : {}), ...(used.category ? { productCatId: used.category } : {}) } });
       if (result.status === 'ok') {
-        const merged = nextPage === 1 ? result.items : [...itemsRef.current, ...result.items.filter(item => !itemsRef.current.some(old => old.itemId === item.itemId))];
+        const fresh = nextPage === 1 ? result.items : result.items.filter(item => !itemsRef.current.some(old => old.itemId === item.itemId));
+        for (const item of fresh) pageOf.current.set(item.itemId, nextPage);
+        const merged = nextPage === 1 ? fresh : [...itemsRef.current, ...fresh];
         itemsRef.current = merged;
         setItems(merged); setPage(result.page); setHasNext(result.hasNextPage); setSimulated(result.simulated); setLoaded(true);
-        if (!used.keyword && !used.category) recommendedCache = { items: merged, page: result.page, hasNext: result.hasNextPage, simulated: result.simulated, at: Date.now() };
+        if (!used.keyword && !used.category) recommendedCache = { items: merged, pages: [...pageOf.current], page: result.page, hasNext: result.hasNextPage, simulated: result.simulated, at: Date.now() };
       } else if (result.status === 'wait' && attempt < 2) {
         setMessage('Só um instante, buscando os produtos...');
         await sleep((result.waitSeconds ?? 2) * 1000 + 300);
@@ -77,7 +87,7 @@ function ProductsPage() {
     const used = { keyword: '', category: undefined };
     setCriteria(used); setLinks({});
     if (recommendedCache && Date.now() - recommendedCache.at < FRESH_MS) {
-      itemsRef.current = recommendedCache.items;
+      itemsRef.current = recommendedCache.items; pageOf.current = new Map(recommendedCache.pages);
       setItems(recommendedCache.items); setPage(recommendedCache.page); setHasNext(recommendedCache.hasNext); setSimulated(recommendedCache.simulated); setLoaded(true); setLoading(false); loadingRef.current = false; setMessage('');
     } else void run(1, used, sortType);
   }
@@ -143,7 +153,7 @@ function ProductsPage() {
     if (!node || !hasNext || loading) return;
     const watcher = new IntersectionObserver(entries => {
       if (entries.some(entry => entry.isIntersecting) && !loadingRef.current && !stopped.current) void run(page + 1, criteria, sortType);
-    }, { rootMargin: '600px' });
+    }, { rootMargin: '200px' });
     watcher.observe(node);
     return () => watcher.disconnect();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -178,7 +188,7 @@ function ProductsPage() {
     {loaded && items.length === 0 && !loading && !message && <div className="py-12 text-center"><ShoppingBag className="mx-auto size-12 text-muted-foreground/60" /><h2 className="mt-4 font-semibold">Nenhum produto encontrado</h2><p className="mt-2 text-sm text-muted-foreground">Tente outra palavra-chave.</p></div>}
     {items.length > 0 && <>
       <p className="mt-4 text-xs text-muted-foreground">{items.length} {items.length === 1 ? 'produto' : 'produtos'}. A comissão mostrada é a taxa máxima; o valor final aparece na venda.</p>
-      <ul className={`mt-3 grid gap-4 transition-opacity lg:grid-cols-2 ${loading ? 'opacity-60' : ''}`}>{shown.map(item => {
+      <ul className={`mt-3 grid gap-4 transition-opacity lg:grid-cols-2 ${loading && !more ? 'opacity-60' : ''}`}>{shown.map(item => {
         const link = links[item.itemId]; const ui = copyUi[item.itemId];
         return <li key={item.itemId} className="flex gap-4 rounded-lg border bg-card p-4">
           <div className="flex size-24 shrink-0 items-center justify-center overflow-hidden rounded-md bg-muted">{item.imageUrl ? <img src={item.imageUrl} alt="" loading="lazy" referrerPolicy="no-referrer" onError={e => { e.currentTarget.style.display = 'none'; }} className="size-full object-cover" /> : <ShoppingBag className="size-8 text-muted-foreground/60" />}</div>
