@@ -5,7 +5,7 @@ export const PRODUCT_FIELDS = 'itemId productName imageUrl shopId shopName shopT
 const ESSENTIAL_FIELDS = new Set(['nodes', 'pageInfo', 'itemId', 'productName', 'productLink', 'hasNextPage', 'page', 'limit']);
 
 export const PAGE_SIZE = 20;
-export const MAX_SEARCH_PAGES = 5;
+export const MAX_SEARCH_PAGES = 30;
 // sortType 1 (relevance) only works together with a keyword.
 export const SORTS = [
   { value: 2, label: 'Mais vendidos' },
