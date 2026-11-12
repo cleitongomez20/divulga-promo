@@ -4,8 +4,8 @@ import type { Json } from '@/integrations/supabase/types';
 export const PRODUCT_FIELDS = 'itemId productName imageUrl shopId shopName shopType commissionRate sellerCommissionRate shopeeCommissionRate commission sales priceMin priceMax priceDiscountRate ratingStar productCatIds productLink offerLink periodStartTime periodEndTime';
 const ESSENTIAL_FIELDS = new Set(['nodes', 'pageInfo', 'itemId', 'productName', 'productLink', 'hasNextPage', 'page', 'limit']);
 
-export const PAGE_SIZE = 20;
-export const MAX_SEARCH_PAGES = 30;
+export const PAGE_SIZE = 50; // the most the Shopee returns per page
+export const MAX_SEARCH_PAGES = 12;
 // sortType 1 (relevance) only works together with a keyword.
 export const SORTS = [
   { value: 2, label: 'Mais vendidos' },
