@@ -23,7 +23,7 @@ const FRESH_MS = 10 * 60 * 1000;
 let recommendedCache: Cached | null = null;
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const LINK_GAP_MS = 3200; // the server keeps at least 3 seconds between link requests
-// Affiliate links already made, remembered while the page stays open so nothing is generated twice.
+// Affiliate links already made on click, remembered while the page stays open so nothing is generated twice.
 const linkCache = new Map<string, string>();
 const inflight = new Map<string, Promise<string | null>>();
 let linkChain: Promise<unknown> = Promise.resolve();
@@ -47,14 +47,11 @@ function ProductsPage() {
   const [loaded, setLoaded] = useState(false);
   const [links, setLinks] = useState<Record<string, LinkState>>({});
   const [copyUi, setCopyUi] = useState<Record<string, CopyState>>({});
-  const visible = useRef(new Set<string>());
-  const observer = useRef<IntersectionObserver | null>(null);
   const sentinel = useRef<HTMLDivElement | null>(null);
   const loadingRef = useRef(true);
   const stopped = useRef(false); // set after a failed page, so scrolling does not keep retrying by itself
   const itemsRef = useRef<ProductItem[]>([]);
   const started = useRef(false);
-  const failedLinks = useRef(new Set<string>());
   const filtered = Boolean(criteria.keyword || criteria.category);
   const shown = useMemo(() => sortProducts(items, sortType), [items, sortType]);
 
@@ -101,7 +98,7 @@ function ProductsPage() {
     // With a keyword or category the Shopee sorts the whole list; otherwise the order is applied here, to what is loaded.
     if (filtered) void run(1, criteria, value);
   }
-  /** Makes the affiliate link for one product. Requests go one at a time, with the pause the server requires, and are never repeated. */
+  /** Makes the affiliate link for one product, only when the user asks for it. Requests go one at a time, with the pause the server requires. */
   function ensureLink(item: ProductItem): Promise<string | null> {
     const id = item.itemId;
     const cached = linkCache.get(id); if (cached) return Promise.resolve(cached);
@@ -139,23 +136,6 @@ function ProductsPage() {
       setLinks(previous => ({ ...previous, [id]: { url, error: 'Não foi possível copiar sozinho. Toque no link e copie manualmente.' } }));
     }
   }
-
-  // Links are prepared ahead of time for the products on screen, one every few seconds, so the button usually copies at once.
-  useEffect(() => {
-    observer.current = new IntersectionObserver(entries => entries.forEach(entry => { const id = (entry.target as HTMLElement).dataset['item']; if (!id) return; if (entry.isIntersecting) visible.current.add(id); else visible.current.delete(id); }), { rootMargin: '200px' });
-    let stop = false;
-    (async () => {
-      while (!stop) {
-        await sleep(800);
-        if (stop || inflight.size) continue;
-        const next = itemsRef.current.find(item => visible.current.has(item.itemId) && !linkCache.has(item.itemId) && !failedLinks.current.has(item.itemId));
-        if (!next) continue;
-        if (!(await ensureLink(next))) failedLinks.current.add(next.itemId);
-      }
-    })();
-    return () => { stop = true; observer.current?.disconnect(); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   // Infinite scroll: when the end of the list gets close, the next page is loaded.
   useEffect(() => {
@@ -200,7 +180,7 @@ function ProductsPage() {
       <p className="mt-4 text-xs text-muted-foreground">{items.length} {items.length === 1 ? 'produto' : 'produtos'}. A comissão mostrada é a taxa máxima; o valor final aparece na venda.</p>
       <ul className={`mt-3 grid gap-4 transition-opacity lg:grid-cols-2 ${loading ? 'opacity-60' : ''}`}>{shown.map(item => {
         const link = links[item.itemId]; const ui = copyUi[item.itemId];
-        return <li key={item.itemId} data-item={item.itemId} ref={el => { if (el) observer.current?.observe(el); }} className="flex gap-4 rounded-lg border bg-card p-4">
+        return <li key={item.itemId} className="flex gap-4 rounded-lg border bg-card p-4">
           <div className="flex size-24 shrink-0 items-center justify-center overflow-hidden rounded-md bg-muted">{item.imageUrl ? <img src={item.imageUrl} alt="" loading="lazy" referrerPolicy="no-referrer" onError={e => { e.currentTarget.style.display = 'none'; }} className="size-full object-cover" /> : <ShoppingBag className="size-8 text-muted-foreground/60" />}</div>
           <div className="min-w-0 flex-1">
             <h3 className="line-clamp-2 text-sm font-semibold">{item.name}</h3>
@@ -212,7 +192,7 @@ function ProductsPage() {
             </p>
             <p className="mt-1 text-sm font-semibold">{priceText(item)}</p>
             <div className="mt-3 flex flex-wrap gap-2">
-              <Button size="sm" variant="outline" className="min-h-11" onClick={() => { failedLinks.current.delete(item.itemId); void copy(item); }} disabled={ui === 'busy'}>{ui === 'busy' ? <LoaderCircle className="animate-spin" /> : ui === 'copied' ? <Check /> : <Copy />}{ui === 'busy' ? 'Gerando link...' : ui === 'copied' ? 'Link copiado' : 'Copiar link de afiliado'}</Button>
+              <Button size="sm" variant="outline" className="min-h-11" onClick={() => void copy(item)} disabled={ui === 'busy'}>{ui === 'busy' ? <LoaderCircle className="animate-spin" /> : ui === 'copied' ? <Check /> : <Copy />}{ui === 'busy' ? 'Gerando link...' : ui === 'copied' ? 'Link copiado' : 'Copiar link de afiliado'}</Button>
               <Button size="sm" variant="ghost" className="min-h-11" asChild><a href={item.productLink} target="_blank" rel="noopener noreferrer"><ExternalLink />Ver na Shopee</a></Button>
             </div>
             {link?.url && link.error && <input readOnly value={link.url} aria-label="Link de afiliado" onFocus={e => e.currentTarget.select()} className="mt-3 h-11 w-full min-w-0 rounded-md border bg-background px-3 text-sm" />}
