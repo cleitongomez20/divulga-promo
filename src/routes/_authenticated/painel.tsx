@@ -80,10 +80,12 @@ function Dashboard() {
     })();
     return () => { stopped = true; timers.forEach(clearTimeout); };
   }, [simulated, intervalMinutes, queryClient, syncStep]);
+  // Same wording as the period filter, e.g. "Nos últimos 7 dias", "Neste mês", "Hoje".
+  const periodFoot = sales.periodPhrase.charAt(0).toUpperCase() + sales.periodPhrase.slice(1);
   const cards = [
     { icon: CircleDollarSign, title: 'Quanto você ganhou', value: money(sales.earnedCents), foot: sales.pendingCents ? `${money(sales.pendingCents)} ainda pendente` : `Vendas concluídas ${sales.periodPhrase}` },
-    { icon: MousePointer2, title: 'Pessoas que clicaram', value: '0', foot: 'A contagem chega numa próxima etapa' },
-    { icon: ShoppingBag, title: 'Pedidos recebidos', value: String(sales.ordersCount), foot: `Pedidos feitos ${sales.periodPhrase}` },
+    { icon: MousePointer2, title: 'Cliques no Link', value: '0', foot: 'A contagem chega numa próxima etapa' },
+    { icon: ShoppingBag, title: 'Pedidos realizados', value: String(sales.ordersCount), foot: periodFoot },
     { icon: Film, title: 'Publicações de hoje', value: String(sales.publishedToday), foot: sales.publishedToday ? `${sales.publishedToday === 1 ? 'Publicação feita' : 'Publicações feitas'} hoje` : 'Nenhuma publicação ainda' },
   ];
   return <WorkspaceShell><>
