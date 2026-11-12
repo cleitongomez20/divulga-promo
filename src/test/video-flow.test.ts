@@ -305,6 +305,23 @@ describe('following the video until it is ready', () => {
     expect(w.removed).toEqual([`${U}/frame.jpg`]);
     expect(w.tables['activity_log']?.some(entry => entry['action'] === 'Vídeo pronto')).toBe(true);
   });
+  it('a finished video made by the automation in automatic mode schedules itself at the planned time', async () => {
+    const planned = new Date(NOW + 30 * 60_000).toISOString();
+    const w = await world({ posts: [rendering({ source: 'auto', scheduled_at: planned, ai_plan: { autoMode: 'auto' } })] }); w.statusReplies.push({ json: { status: 'completed', video: { url: VIDEO_URL } } });
+    await tick(w);
+    expect(row(w)).toMatchObject({ status: 'scheduled', scheduled_at: planned, attempts: 0, video_job: null, error: null });
+    expect(w.tables['activity_log']?.some(entry => entry['action'] === 'Vídeo pronto e agendado')).toBe(true);
+  });
+  it('if the planned time has already passed, the automatic video goes out in a couple of minutes', async () => {
+    const w = await world({ posts: [rendering({ source: 'auto', scheduled_at: new Date(NOW - 60 * 60_000).toISOString(), ai_plan: { autoMode: 'auto' } })] }); w.statusReplies.push({ json: { status: 'completed', video: { url: VIDEO_URL } } });
+    await tick(w);
+    expect(row(w)).toMatchObject({ status: 'scheduled', scheduled_at: new Date(NOW + 2 * 60_000).toISOString() });
+  });
+  it('a finished video made by the automation in approval mode waits as a draft, with no time set', async () => {
+    const w = await world({ posts: [rendering({ source: 'auto', scheduled_at: new Date(NOW + 30 * 60_000).toISOString(), ai_plan: { autoMode: 'approval' } })] }); w.statusReplies.push({ json: { status: 'completed', video: { url: VIDEO_URL } } });
+    await tick(w);
+    expect(row(w)).toMatchObject({ status: 'draft', scheduled_at: null });
+  });
   it('fails and returns the reserved estimate when Higgsfield could not make the video', async () => {
     for (const [state, message] of [['failed', /não conseguiu gerar/], ['nsfw', /bloqueou/], ['canceled', /cancelado/]] as const) {
       const w = await world({ posts: [rendering()] }); reserved(w); w.statusReplies.push({ json: { status: state } });

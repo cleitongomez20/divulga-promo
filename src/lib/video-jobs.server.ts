@@ -26,7 +26,7 @@ export const looksLikeMp4 = (bytes: Uint8Array) => bytes.length > 12 && bytes[4]
 export async function advanceVideoJobs(db: Db, p: { masterKey: string; fetcher?: Fetcher; now?: () => number; maxCompletions?: number }): Promise<VideoJobsResult> {
   const fetcher = p.fetcher ?? fetch; const now = p.now ?? Date.now;
   const result: VideoJobsResult = { checked: 0, completed: 0, failed: 0, waiting: 0 };
-  const { data } = await db.from('posts').select('id,user_id,instagram_account_id,format,video_job,created_at').eq('status', 'rendering').order('created_at', { ascending: true }).limit(10);
+  const { data } = await db.from('posts').select('id,user_id,instagram_account_id,format,video_job,created_at,source,scheduled_at,ai_plan').eq('status', 'rendering').order('created_at', { ascending: true }).limit(10);
 
   for (const row of (data ?? []) as Row[]) {
     result.checked++;
@@ -105,9 +105,15 @@ export async function advanceVideoJobs(db: Db, p: { masterKey: string; fetcher?:
     if (asset.error) { await undo(); await wait(); continue; }
     const link = await db.from('post_media').insert({ user_id: userId, post_id: postId, asset_id: assetId, position: 0 });
     if (link.error) { await undo(); await wait(); continue; }
-    await db.from('posts').update({ status: 'draft', video_asset_id: assetId, video_job: null, error: null }).eq('id', postId).eq('user_id', userId).eq('status', 'rendering');
+    // A video made by the automation in automatic mode is scheduled by itself, at its planned time (or in a couple of minutes if that time has passed).
+    // Otherwise it waits as a draft for the user's approval, with no time set.
+    const plan = row['ai_plan'] && typeof row['ai_plan'] === 'object' ? (row['ai_plan'] as Row) : {};
+    const automatic = row['source'] === 'auto' && plan['autoMode'] === 'auto';
+    const planned = Date.parse(str(row['scheduled_at']));
+    const goesAt = automatic ? new Date(Math.max(Number.isNaN(planned) ? 0 : planned, now() + 2 * 60_000)).toISOString() : null;
+    await db.from('posts').update({ status: automatic ? 'scheduled' : 'draft', scheduled_at: goesAt, ...(automatic ? { attempts: 0 } : {}), video_asset_id: assetId, video_job: null, error: null }).eq('id', postId).eq('user_id', userId).eq('status', 'rendering');
     await removeFrame(job);
-    await log('Vídeo pronto', `${row['format'] === 'story' ? 'Story' : 'Reels'} de ${job.duration}s com ${VIDEO_TOOLS[job.tool].label}`, { size_bytes: bytes.length });
+    await log(automatic ? 'Vídeo pronto e agendado' : 'Vídeo pronto', `${row['format'] === 'story' ? 'Story' : 'Reels'} de ${job.duration}s com ${VIDEO_TOOLS[job.tool].label}`, { size_bytes: bytes.length, ...(goesAt ? { scheduled_at: goesAt } : {}) });
     result.completed++;
   }
   return result;

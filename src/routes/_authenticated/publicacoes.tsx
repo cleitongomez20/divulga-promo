@@ -2,7 +2,7 @@ import { createFileRoute, Link } from '@tanstack/react-router';
 import { useQuery, useQueryClient, useSuspenseQuery } from '@tanstack/react-query';
 import { useServerFn } from '@tanstack/react-start';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { ArrowDown, ArrowUp, CalendarClock, Clapperboard, LoaderCircle, Pencil, Send, Sparkles, Upload, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, Bot, CalendarClock, Clapperboard, LoaderCircle, Pencil, Send, Sparkles, Upload, X } from 'lucide-react';
 import { WorkspaceShell } from '@/components/workspace-shell';
 import { Button } from '@/components/ui/button';
 import { supabase } from '@/integrations/supabase/client';
@@ -10,6 +10,8 @@ import { pageHead } from '@/lib/metadata';
 import { workspaceQuery } from '@/lib/workspace-query';
 import { cancelPost, createManualPost, getPostsOverview, queuePostNow, schedulePostAt, updateDraftCaption, type PostView } from '@/lib/posts.functions';
 import { generateContent, generateVideo } from '@/lib/brain.functions';
+import { getAutomation, planAutomationNow, saveAutomation } from '@/lib/automation.functions';
+import { MODE_LABELS, type AutomationMode } from '@/lib/automation';
 import { HEARTBEAT_STALE_MS } from '@/lib/publishing';
 import { prepareFile, removeUploads, uploadPrepared } from '@/lib/media-upload';
 import { FORMAT_LABELS, FORMAT_RULES, MAX_CAPTION, POST_FORMATS, STATUS_LABELS, CANCELABLE_STATUSES, checkSchedule, formatInZone, validateMedia, zonedTimeToUtcIso, type PostFormat } from '@/lib/posts';
@@ -46,6 +48,14 @@ function PostsPage() {
   const queue = useServerFn(queuePostNow);
   const generate = useServerFn(generateContent);
   const orderVideoFn = useServerFn(generateVideo);
+  const { data: automation } = useQuery({ queryKey: ['automation'], queryFn: () => getAutomation(), staleTime: 0, refetchInterval: 60_000 });
+  const saveAutomationFn = useServerFn(saveAutomation);
+  const planNowFn = useServerFn(planAutomationNow);
+  const [autoOn, setAutoOn] = useState(false);
+  const [autoMode, setAutoMode] = useState<AutomationMode>('approval');
+  const [autoStory, setAutoStory] = useState(true);
+  // Shows what is saved in the automation options once they arrive.
+  useEffect(() => { if (automation) { setAutoOn(automation.enabled); setAutoMode(automation.mode); setAutoStory(automation.storyAfterReel); } }, [automation?.enabled, automation?.mode, automation?.storyAfterReel]);
   const saveCaption = useServerFn(updateDraftCaption);
   const schedule = useServerFn(schedulePostAt);
   const [editing, setEditing] = useState<{ id: string; text: string } | null>(null);
@@ -174,6 +184,24 @@ function PostsPage() {
     } catch { setMessage('Não foi possível pedir o vídeo agora. Tente de novo.'); }
     finally { setBusy(''); }
   }
+  async function saveAutomationOptions() {
+    setBusy('Salvando a automação...'); setMessage('');
+    try {
+      const result = await saveAutomationFn({ data: { enabled: autoOn, mode: autoMode, storyAfterReel: autoStory } });
+      setMessage(result.message);
+      await queryClient.invalidateQueries({ queryKey: ['automation'] });
+    } catch { setMessage('Não foi possível salvar a automação agora. Tente de novo.'); }
+    finally { setBusy(''); }
+  }
+  async function planNext() {
+    setBusy('O Claude está planejando o próximo Reels e pedindo ao Higgsfield (pode levar até 1 minuto)...'); setMessage('');
+    try {
+      const result = await planNowFn();
+      setMessage(result.message);
+      await Promise.all([queryClient.invalidateQueries({ queryKey: ['posts'] }), queryClient.invalidateQueries({ queryKey: ['automation'] })]);
+    } catch { setMessage('Não foi possível pedir o Reels agora. Tente de novo.'); }
+    finally { setBusy(''); }
+  }
   async function saveEdit() {
     if (!editing) return;
     setBusy('Salvando legenda...'); setMessage('');
@@ -228,6 +256,24 @@ function PostsPage() {
       {busy.startsWith('O Claude') && <p role="status" className="mt-3 text-sm text-muted-foreground">{busy}</p>}
     </section>
 
+    <section className="mt-8 rounded-lg border bg-card p-5" aria-labelledby="auto-title">
+      <div className="flex items-center justify-between gap-3"><div className="flex items-center gap-3"><Bot className="size-6 text-primary" /><h2 id="auto-title" className="text-lg font-semibold">Automação</h2></div><span className="rounded-full bg-muted px-3 py-1 text-xs font-medium">{automation?.enabled ? 'Ligada' : 'Desligada'}</span></div>
+      <p className="mt-2 text-sm text-muted-foreground">Todo dia a automação pede os Reels, um de cada vez, espalhados dentro do seu horário de postagem (tela Configurações). Cada Reels vira, algumas horas depois, um Story com o mesmo vídeo. Os tetos de gasto do Claude e do Higgsfield continuam valendo.</p>
+      <div className="mt-4 space-y-4">
+        <label className="flex items-center gap-3 text-sm font-medium"><input type="checkbox" className="size-5" checked={autoOn} disabled={Boolean(busy)} onChange={e => setAutoOn(e.target.checked)} />Ligar a automação</label>
+        <fieldset><legend className="form-label">Modo</legend>
+          <div className="grid gap-2">{(['approval', 'auto'] as const).map(mode => <label key={mode} className="flex items-start gap-3 text-sm"><input type="radio" name="auto-mode" className="mt-1 size-4" checked={autoMode === mode} disabled={Boolean(busy)} onChange={() => setAutoMode(mode)} /><span><span className="font-medium">{MODE_LABELS[mode]}</span>{mode === 'approval' ? ': os vídeos prontos ficam como rascunho até você aprovar. Recomendado no começo.' : ': os vídeos prontos são agendados sozinhos, sem a sua aprovação.'}</span></label>)}</div>
+        </fieldset>
+        <label className="flex items-center gap-3 text-sm"><input type="checkbox" className="size-5" checked={autoStory} disabled={Boolean(busy)} onChange={e => setAutoStory(e.target.checked)} />Postar um Story com o mesmo vídeo algumas horas depois do Reels</label>
+      </div>
+      <div className="mt-4 flex flex-wrap gap-2">
+        <Button type="button" className="h-11" disabled={Boolean(busy)} onClick={() => void saveAutomationOptions()}>Salvar automação</Button>
+        <Button type="button" variant="outline" className="h-11" disabled={Boolean(busy) || !automation?.enabled} onClick={() => void planNext()}><Clapperboard />Criar o próximo Reels agora</Button>
+      </div>
+      {automation?.enabled && <div className="mt-4 text-sm"><p className="font-medium">Hoje: {automation.madeToday} de {automation.targetToday} Reels criados.{automation.pending > 0 ? ` ${automation.pending} esperando você.` : ''}</p>{automation.message && <p className="mt-1 text-muted-foreground">{automation.message}</p>}</div>}
+      <p className="mt-3 text-xs text-muted-foreground">O botão de criar agora ignora o relógio, mas respeita a meta do dia, as falhas e os tetos de gasto. Se a automação encontrar um problema, ela espera 15 minutos antes de tentar de novo, para não gastar à toa.</p>
+    </section>
+
     <form onSubmit={submit} className="mt-8 rounded-lg border bg-card p-5">
       <h2 className="text-lg font-semibold">Nova publicação</h2>
       <fieldset className="mt-5"><legend className="form-label">Formato</legend>
@@ -278,7 +324,7 @@ function PostsPage() {
       <div className="flex flex-wrap items-center gap-2"><span className="text-sm font-semibold">{FORMAT_LABELS[post.format as PostFormat] ?? post.format}</span><span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${STATUS_STYLE[post.status] ?? 'bg-muted text-muted-foreground'}`}>{STATUS_LABELS[post.status] ?? post.status}</span>
         {post.scheduledAt && <span className="text-xs text-muted-foreground">{post.status === 'published' && post.publishedAt ? `Publicada em ${formatInZone(post.publishedAt, timezone)}` : `Para ${formatInZone(post.scheduledAt, timezone)}`}</span>}</div>
       <p className="mt-2 line-clamp-2 text-sm">{post.productTitle}</p>
-      {post.source === 'ai' && post.aiPlan && <div className="mt-2 rounded-md bg-accent p-3 text-xs text-accent-foreground"><p className="flex items-center gap-1.5 font-semibold"><Sparkles className="size-3.5" />Criado pelo Claude{post.aiPlan.angle ? `: ${post.aiPlan.angle}` : ''}</p>{post.aiPlan.reason && <p className="mt-1">Por que este produto: {post.aiPlan.reason}</p>}{post.aiPlan.linkMissing && <p className="mt-1 font-medium">Ainda sem link de afiliado. Conecte a Shopee e gere de novo antes de publicar.</p>}</div>}
+      {(post.source === 'ai' || post.source === 'auto') && post.aiPlan && <div className="mt-2 rounded-md bg-accent p-3 text-xs text-accent-foreground"><p className="flex items-center gap-1.5 font-semibold"><Sparkles className="size-3.5" />{post.source === 'auto' ? 'Criado pela automação' : 'Criado pelo Claude'}{post.aiPlan.angle ? `: ${post.aiPlan.angle}` : ''}</p>{post.aiPlan.reason && <p className="mt-1">Por que este produto: {post.aiPlan.reason}</p>}{post.aiPlan.linkMissing && <p className="mt-1 font-medium">Ainda sem link de afiliado. Conecte a Shopee e gere de novo antes de publicar.</p>}</div>}
       {editing?.id === post.id
         ? <div className="mt-2"><label className="form-label" htmlFor={`caption-${post.id}`}>Legenda</label><textarea id={`caption-${post.id}`} className="field min-h-48" maxLength={MAX_CAPTION} value={editing.text} onChange={e => setEditing({ id: post.id, text: e.target.value })} /><p className="mt-1 text-right text-xs text-muted-foreground">{editing.text.length}/{MAX_CAPTION}</p>
           <div className="mt-2 flex flex-wrap gap-2"><Button type="button" size="sm" className="min-h-11" disabled={Boolean(busy)} onClick={() => void saveEdit()}>Salvar legenda</Button><Button type="button" variant="outline" size="sm" className="min-h-11" disabled={Boolean(busy)} onClick={() => setEditing(null)}>Cancelar</Button></div></div>

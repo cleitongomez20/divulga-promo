@@ -6,6 +6,7 @@ import { askClaude, type ClaudeMessage } from './claude.server';
 import { TRIGGER_WORD, feedbackMessage, subIdOf, type ProductCandidate } from './content-brain';
 import { BrainError, loadCandidatePool, storeProductPhoto } from './content-brain.server';
 import { HiggsfieldError, credentialsForJob, errorForStatus, hfCall, markInvalid, recordMediaUsage } from './higgsfield.server';
+import type { AutomationMode } from './automation';
 import { MEDIA_BUCKET } from './posts';
 import { encodeSubIds } from './products';
 import {
@@ -22,6 +23,8 @@ export async function startVideoDraft(db: Db, p: {
   userId: string; masterKey: string; format: VideoFormat; fetcher?: Fetcher; now?: () => number;
   /** Turns a Shopee product address into a tracked affiliate link. Returns null when it cannot (the post is then created without a link). */
   makeLink?: (productUrl: string, subIds: string[]) => Promise<string | null>;
+  /** Set by the automation: the post is marked as made by it, remembers the planned time, and (in automatic mode) is scheduled by itself when the video is ready. */
+  auto?: { mode: AutomationMode; scheduledAt: string };
 }): Promise<VideoDraftResult> {
   const fetcher = p.fetcher ?? fetch; const now = p.now ?? Date.now; const at = now();
 
@@ -65,9 +68,9 @@ export async function startVideoDraft(db: Db, p: {
   // The post exists before the order goes out, so a paid video can never be left without a post to receive it.
   const job: VideoJob = { requestId: null, tool: output.tool, endpoint: tool.endpoint, duration: output.duration, framePath: frame.path, estimatedMicros, startedAt: at };
   const created = await db.from('posts').insert({
-    id: postId, user_id: p.userId, instagram_account_id: accountId, product_id: product.id, format: p.format, status: 'rendering', caption: videoCaption(p.format, output),
-    trigger_word: p.format === 'reel' ? TRIGGER_WORD : null, affiliate_link: affiliateLink, sub_id: subId, idempotency_key: crypto.randomUUID(), source: 'ai', video_job: job,
-    ai_plan: { reason: output.reason, angle: output.angle, hook: output.hook, tool: output.tool, duration: output.duration, costMicros: claudeMicros, estimatedMicros, linkMissing: affiliateLink === null, generatedAt: new Date(at).toISOString() },
+    id: postId, user_id: p.userId, instagram_account_id: accountId, product_id: product.id, format: p.format, status: 'rendering', scheduled_at: p.auto?.scheduledAt ?? null, caption: videoCaption(p.format, output),
+    trigger_word: p.format === 'reel' ? TRIGGER_WORD : null, affiliate_link: affiliateLink, sub_id: subId, idempotency_key: crypto.randomUUID(), source: p.auto ? 'auto' : 'ai', video_job: job,
+    ai_plan: { reason: output.reason, angle: output.angle, hook: output.hook, tool: output.tool, duration: output.duration, costMicros: claudeMicros, estimatedMicros, linkMissing: affiliateLink === null, autoMode: p.auto?.mode ?? null, generatedAt: new Date(at).toISOString() },
   });
   if (created.error) { await removeFrame(); throw new BrainError('Não foi possível criar o rascunho do vídeo. Tente de novo.'); }
 
