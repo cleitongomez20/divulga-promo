@@ -19,3 +19,4 @@
 - Shopee transport and AES-GCM encryption live in server-only modules behind authenticated server functions; bind ciphertext to the owner and keep signature payloads byte-identical to prevent leaks and authentication drift.
 - Reserve Shopee requests atomically in connector_runtime, never in worker memory; transaction-only service RPCs manage encrypted credentials and audit results to survive concurrent requests and stateless deployment.
 - Shopee conversion sync runs as one bounded window per tick from a persisted queue (shopee_sync_state) with a DB lock and per-user 31s gap; stateless workers cannot hold paging state.
+- Home-screen support is manifest-only with local favicon and touch icons; keep shared social images in leaf pageHead metadata and do not add offline caches or service workers.
