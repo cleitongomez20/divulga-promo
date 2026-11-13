@@ -12,7 +12,7 @@ export type PostActionResult = { status: 'ok'; message?: string; postId?: string
 export type PostMediaView = { url: string; kind: MediaKind };
 export type AiPlanView = { reason: string; angle: string; hook: string; linkMissing: boolean };
 export type PostView = { id: string; format: string; status: string; attempts: number; source: string; aiPlan: AiPlanView | null; hasLink: boolean; scheduledAt: string | null; publishedAt: string | null; caption: string; productTitle: string; error: string | null; media: PostMediaView[] };
-export type PostsOverview = { ai: { connected: boolean; videoReady: boolean }; scheduler: { lastVisitAt: string | null }; account: { username: string | null; status: string } | null; products: { id: string; title: string }[]; posts: PostView[] };
+export type PostsOverview = { ai: { provider: 'anthropic' | 'openai'; connected: boolean; videoReady: boolean }; scheduler: { lastVisitAt: string | null }; account: { username: string | null; status: string } | null; products: { id: string; title: string }[]; posts: PostView[] };
 
 // The generated database types do not know the media columns and the post_media table yet, so this file talks to the database without them.
 async function admin() { return (await import('@/integrations/supabase/client.server')).supabaseAdmin as unknown as SupabaseClient; }
@@ -37,12 +37,15 @@ const log = (db: SupabaseClient, userId: string, action: string, result: string,
 
 export const getPostsOverview = createServerFn({ method: 'GET' }).middleware([requireSupabaseAuth]).handler(async ({ context }): Promise<PostsOverview> => {
   const db = await admin(); const userId = context.userId;
-  const [account, products, posts, heartbeat, aiConnection, mediaConnection] = await Promise.all([
+  const { activeProviderOf } = await import('./ai.server');
+  const [account, products, posts, heartbeat, aiConnection, openaiConnection, activeProvider, mediaConnection] = await Promise.all([
     db.from('instagram_accounts').select('id,username,status').eq('user_id', userId).order('created_at', { ascending: true }).limit(1).maybeSingle(),
     db.from('products').select('id,title').eq('user_id', userId).order('collected_at', { ascending: false }).limit(200),
     db.from('posts').select('id,format,status,scheduled_at,published_at,caption,error,product_id,attempts,source,ai_plan,affiliate_link,created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(50),
     db.from('connector_runtime').select('next_allowed_at').eq('scope', HEARTBEAT_SCOPE).maybeSingle(),
     db.from('ai_connections').select('status,credential_id').eq('user_id', userId).maybeSingle(),
+    db.from('openai_connections').select('status,credential_id').eq('user_id', userId).maybeSingle(),
+    activeProviderOf(db, userId),
     db.from('media_connections').select('status,credential_id').eq('user_id', userId).maybeSingle(),
   ]);
   if (account.error || products.error || posts.error) throw new Error('Não foi possível carregar suas publicações. Tente de novo.');
@@ -70,10 +73,11 @@ export const getPostsOverview = createServerFn({ method: 'GET' }).middleware([re
     mediaOf.set(text(link['post_id']), list);
   }
   const acc = account.data as Row | null;
-  const aiRow = (aiConnection.data ?? null) as Row | null;
+  const aiRow = ((activeProvider === 'openai' ? openaiConnection.data : aiConnection.data) ?? null) as Row | null;
   const mediaRow = (mediaConnection.data ?? null) as Row | null;
   return {
     ai: {
+      provider: activeProvider,
       connected: Boolean(aiRow && textOrNull(aiRow['credential_id']) && text(aiRow['status']) === 'connected'),
       videoReady: Boolean(aiRow && textOrNull(aiRow['credential_id']) && text(aiRow['status']) === 'connected' && mediaRow && textOrNull(mediaRow['credential_id']) && text(mediaRow['status']) === 'connected'),
     },

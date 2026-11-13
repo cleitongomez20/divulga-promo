@@ -2,6 +2,7 @@ import { createServerFn } from '@tanstack/react-start';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { requireSupabaseAuth } from '@/integrations/supabase/auth-middleware';
 import { automationSettingsSchema } from './automation';
+import { AI_PROVIDER_LABELS } from './openai';
 import type { AutomationView } from './automation.server';
 
 export type AutomationStatus = AutomationView;
@@ -22,14 +23,15 @@ export const saveAutomation = createServerFn({ method: 'POST' }).middleware([req
     try {
       const db = await admin(); const userId = context.userId;
       if (data.enabled) {
-        const [account, claude, higgs] = await Promise.all([
+        const { activeProviderReady } = await import('./ai.server');
+        const [account, ai, higgs] = await Promise.all([
           db.from('instagram_accounts').select('status').eq('user_id', userId).order('created_at', { ascending: true }).limit(1).maybeSingle(),
-          db.from('ai_connections').select('status,credential_id').eq('user_id', userId).maybeSingle(),
+          activeProviderReady(db, userId),
           db.from('media_connections').select('status,credential_id').eq('user_id', userId).maybeSingle(),
         ]);
         const ok = (row: unknown, needsCredential: boolean) => { const r = (row ?? null) as Record<string, unknown> | null; return Boolean(r && text(r['status']) === 'connected' && (!needsCredential || text(r['credential_id']))); };
         if (!ok(account.data, false)) return { status: 'error', message: 'Para ligar a automação, conecte o Instagram na tela Conexões.' };
-        if (!ok(claude.data, true)) return { status: 'error', message: 'Para ligar a automação, conecte o Claude na tela Conexões.' };
+        if (!ai.ready) return { status: 'error', message: `Para ligar a automação, conecte a ${AI_PROVIDER_LABELS[ai.provider]} na tela Conexões.` };
         if (!ok(higgs.data, true)) return { status: 'error', message: 'Para ligar a automação, conecte o Higgsfield na tela Conexões.' };
       }
       const saved = await db.from('automation_settings').upsert({

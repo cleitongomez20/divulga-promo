@@ -2,8 +2,7 @@
 // should be ordered now, and whether a published Reels is due for its Story. It spends money only through the guarded paths that already exist
 // (the Claude and Higgsfield monthly caps, the limit of videos at once) and it backs off after an error, so a problem can never burn money every minute.
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { claudeErrorMessage } from './claude';
-import { ClaudeError } from './claude.server';
+import { aiErrorMessage } from './ai.server';
 import { BrainError } from './content-brain.server';
 import { HiggsfieldError } from './higgsfield.server';
 import { higgsfieldErrorMessage } from './higgsfield';
@@ -52,7 +51,8 @@ async function remember(db: Db, userId: string, config: AutomationConfig, messag
 }
 function explain(error: unknown): string {
   if (error instanceof BrainError) return error.message;
-  if (error instanceof ClaudeError) return claudeErrorMessage(error.kind, error.detail);
+  const aiMessage = aiErrorMessage(error);
+  if (aiMessage) return aiMessage;
   if (error instanceof HiggsfieldError) return higgsfieldErrorMessage(error.kind, error.detail);
   return 'Aconteceu um problema inesperado.';
 }

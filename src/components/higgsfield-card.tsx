@@ -57,7 +57,7 @@ export function HiggsfieldCard() {
   return <section className="rounded-lg border bg-card p-5 sm:p-7" aria-labelledby="higgsfield-title">
     <div className="flex items-start justify-between gap-4"><div className="flex items-center gap-3"><Clapperboard className="size-7 text-primary" /><h2 id="higgsfield-title" className="text-xl font-semibold">Higgsfield (imagens e vídeos)</h2></div>
       <span className="rounded-full bg-muted px-3 py-1 text-xs font-medium">{isLoading ? 'Carregando...' : label}</span></div>
-    <p className="mt-3 text-sm text-muted-foreground">Cria as imagens do carrossel e os vídeos que o Claude pede. A chave fica guardada protegida e nunca volta para a tela.</p>
+    <p className="mt-3 text-sm text-muted-foreground">Cria as imagens do carrossel e os vídeos que a IA pede. A chave fica guardada protegida e nunca volta para a tela.</p>
 
     {showKeyForm
       ? <form onSubmit={submitConnect} className="mt-6 space-y-5">

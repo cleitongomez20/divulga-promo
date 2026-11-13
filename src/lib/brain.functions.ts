@@ -2,7 +2,7 @@ import { createServerFn } from '@tanstack/react-start';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { z } from 'zod';
 import { requireSupabaseAuth } from '@/integrations/supabase/auth-middleware';
-import { claudeErrorMessage, formatUsd } from './claude';
+import { formatUsd } from './claude';
 import { higgsfieldErrorMessage } from './higgsfield';
 import { VIDEO_FORMATS, VIDEO_FORMAT_LABELS } from './video-brain';
 
@@ -35,10 +35,11 @@ async function prepare(userId: string, scope: string) {
 /** Turns the errors the generating code raises into a message the user can read. */
 async function explain(error: unknown): Promise<GenerateResult> {
   const { BrainError } = await import('./content-brain.server');
-  const { ClaudeError } = await import('./claude.server');
+  const { aiErrorMessage } = await import('./ai.server');
   const { HiggsfieldError } = await import('./higgsfield.server');
   if (error instanceof BrainError) return { status: 'error', message: error.message };
-  if (error instanceof ClaudeError) return { status: 'error', message: claudeErrorMessage(error.kind, error.detail) };
+  const aiMessage = aiErrorMessage(error);
+  if (aiMessage) return { status: 'error', message: aiMessage };
   if (error instanceof HiggsfieldError) return { status: 'error', message: higgsfieldErrorMessage(error.kind, error.detail) };
   return { status: 'error', message: 'Não foi possível gerar o conteúdo agora. Tente de novo.' };
 }
@@ -74,7 +75,7 @@ export const generateVideo = createServerFn({ method: 'POST' }).middleware([requ
         const link = draft.linkMissing ? ' Ainda sem link de afiliado: conecte a Shopee ou tente de novo.' : '';
         return {
           status: 'ok', postId: draft.postId,
-          message: `${VIDEO_FORMAT_LABELS[data.format]} pedido para "${draft.productTitle.slice(0, 60)}": ${draft.duration}s com ${draft.tool}. Custo estimado: ${formatUsd(draft.estimatedMicros)} de vídeo mais ${formatUsd(draft.costMicros)} do Claude. O vídeo leva alguns minutos e aparece como rascunho.${link}`,
+          message: `${VIDEO_FORMAT_LABELS[data.format]} pedido para "${draft.productTitle.slice(0, 60)}": ${draft.duration}s com ${draft.tool}. Custo estimado: ${formatUsd(draft.estimatedMicros)} de vídeo mais ${formatUsd(draft.costMicros)} da IA. O vídeo leva alguns minutos e aparece como rascunho.${link}`,
         };
       } catch (error) { return await explain(error); }
     } catch { return { status: 'error', message: 'Não foi possível pedir o vídeo agora. Tente de novo.' }; }

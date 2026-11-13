@@ -2,7 +2,8 @@
 // a video tool from our catalog and writes the plan. The code then orders the video and follows it until it is ready (see video-jobs.server.ts).
 // Nothing is published here: a finished video always lands as a draft for the user to approve.
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { askClaude, type ClaudeMessage } from './claude.server';
+import { askAi } from './ai.server';
+import type { ClaudeMessage } from './claude.server';
 import { TRIGGER_WORD, feedbackMessage, subIdOf, type ProductCandidate } from './content-brain';
 import { BrainError, loadCandidatePool, storeProductPhoto } from './content-brain.server';
 import { HiggsfieldError, credentialsForJob, errorForStatus, hfCall, markInvalid, recordMediaUsage } from './higgsfield.server';
@@ -40,7 +41,7 @@ export async function startVideoDraft(db: Db, p: {
   const messages: ClaudeMessage[] = [{ role: 'user', content: user }];
   let claudeMicros = 0; let output: VideoOutput | null = null; let lastProblems: string[] = [];
   for (let attempt = 0; attempt < 2 && !output; attempt++) {
-    const reply = await askClaude(db, { userId: p.userId, masterKey: p.masterKey, purpose: 'video', system, messages, maxTokens: 1800, timeoutMs: 60_000, fetcher, now });
+    const reply = await askAi(db, { userId: p.userId, masterKey: p.masterKey, purpose: 'video', system, messages, maxTokens: 1800, timeoutMs: 60_000, fetcher, now });
     claudeMicros += reply.costMicros;
     const verdict = judgeVideoAnswer(reply.text, p.format, ids);
     if (verdict.ok) { output = verdict.output; break; }
@@ -48,8 +49,8 @@ export async function startVideoDraft(db: Db, p: {
     messages.push({ role: 'assistant', content: reply.text }, { role: 'user', content: feedbackMessage(verdict.problems) });
   }
   if (!output) {
-    await db.from('activity_log').insert({ user_id: p.userId, action: 'Vídeo recusado pelas regras', result: 'O Claude não escreveu dentro das regras', details: { problems: lastProblems } });
-    throw new BrainError('O Claude não conseguiu planejar o vídeo dentro das regras desta vez. Tente de novo.');
+    await db.from('activity_log').insert({ user_id: p.userId, action: 'Vídeo recusado pelas regras', result: 'A IA não escreveu dentro das regras', details: { problems: lastProblems } });
+    throw new BrainError('A IA não conseguiu planejar o vídeo dentro das regras desta vez. Tente de novo.');
   }
   const product = candidates.find(item => item.id === output?.chosen_product_id) as ProductCandidate;
   const tool = VIDEO_TOOLS[output.tool];

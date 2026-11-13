@@ -6,6 +6,7 @@ import { ShoppingBag, Save, PlugZap, Trash2, RefreshCw, LoaderCircle, FlaskConic
 import { WorkspaceShell } from '@/components/workspace-shell';
 import { InstagramCard } from '@/components/instagram-card';
 import { ClaudeCard } from '@/components/claude-card';
+import { OpenAiCard } from '@/components/openai-card';
 import { HiggsfieldCard } from '@/components/higgsfield-card';
 import { Button } from '@/components/ui/button';
 import { PasswordInput } from '@/components/password-input';
@@ -56,6 +57,7 @@ function ConnectionsPage() {
       </section>
       <InstagramCard />
       <ClaudeCard />
+      <OpenAiCard />
       <HiggsfieldCard />
     </div>
   </WorkspaceShell>;

@@ -167,7 +167,7 @@ function PostsPage() {
   }
 
   async function generateOne() {
-    setBusy('O Claude está escolhendo o produto e escrevendo (pode levar até 30 segundos)...'); setMessage('');
+    setBusy('A IA está escolhendo o produto e escrevendo (pode levar até 30 segundos)...'); setMessage('');
     try {
       const result = await generate();
       setMessage(result.message);
@@ -176,7 +176,7 @@ function PostsPage() {
     finally { setBusy(''); }
   }
   async function orderVideo(format: 'reel' | 'story') {
-    setBusy('O Claude está planejando o vídeo e pedindo ao Higgsfield (pode levar até 1 minuto)...'); setMessage('');
+    setBusy('A IA está planejando o vídeo e pedindo ao Higgsfield (pode levar até 1 minuto)...'); setMessage('');
     try {
       const result = await orderVideoFn({ data: { format } });
       setMessage(result.message);
@@ -194,7 +194,7 @@ function PostsPage() {
     finally { setBusy(''); }
   }
   async function planNext() {
-    setBusy('O Claude está planejando o próximo Reels e pedindo ao Higgsfield (pode levar até 1 minuto)...'); setMessage('');
+    setBusy('A IA está planejando o próximo Reels e pedindo ao Higgsfield (pode levar até 1 minuto)...'); setMessage('');
     try {
       const result = await planNowFn();
       setMessage(result.message);
@@ -228,7 +228,7 @@ function PostsPage() {
     finally { setBusy(''); }
   }
 
-  const formBusy = busy.startsWith('O Claude') ? '' : busy;
+  const formBusy = busy.startsWith('A IA está') ? '' : busy;
   const waiting = overview?.posts.some(post => post.status === 'scheduled' || post.status === 'rendering') ?? false;
   const lastVisit = overview?.scheduler.lastVisitAt ? Date.parse(overview.scheduler.lastVisitAt) : null;
   const schedulerSilent = waiting && (lastVisit === null || Date.now() - lastVisit > HEARTBEAT_STALE_MS);
@@ -244,21 +244,21 @@ function PostsPage() {
     {isError && <p role="status" className="mt-6 text-sm font-medium">Não foi possível carregar suas publicações. Atualize a página.</p>}
 
     <section className="mt-8 rounded-lg border bg-card p-5" aria-labelledby="ai-title">
-      <div className="flex items-center gap-3"><Sparkles className="size-6 text-primary" /><h2 id="ai-title" className="text-lg font-semibold">Gerar com o Claude</h2></div>
-      <p className="mt-2 text-sm text-muted-foreground">O Claude escolhe um dos produtos que você já buscou e escreve a legenda. Em foto, cria um rascunho com a foto do produto na hora. Em Reels e Story, pede um vídeo ao Higgsfield, que leva alguns minutos e aparece aqui como rascunho. Você revisa, edita e aprova antes de qualquer coisa ser publicada.</p>
-      {overview && !overview.ai.connected && <p className="mt-3 text-sm font-medium">Conecte o Claude na tela <Link to="/conexoes" className="underline">Conexões</Link> para usar.</p>}
-      <Button type="button" className="mt-4 h-11" disabled={Boolean(busy) || !overview?.ai.connected || !overview?.account} onClick={() => void generateOne()}>{busy.startsWith('O Claude') ? <LoaderCircle className="animate-spin" /> : <Sparkles />}Gerar conteúdo com o Claude</Button>
+      <div className="flex items-center gap-3"><Sparkles className="size-6 text-primary" /><h2 id="ai-title" className="text-lg font-semibold">Gerar com a IA</h2></div>
+      <p className="mt-2 text-sm text-muted-foreground">A IA escolhe um dos produtos que você já buscou e escreve a legenda. Em foto, cria um rascunho com a foto do produto na hora. Em Reels e Story, pede um vídeo ao Higgsfield, que leva alguns minutos e aparece aqui como rascunho. Você revisa, edita e aprova antes de qualquer coisa ser publicada.</p>
+      {overview && !overview.ai.connected && <p className="mt-3 text-sm font-medium">Conecte o Claude ou a OpenAI na tela <Link to="/conexoes" className="underline">Conexões</Link> para usar.</p>}
+      <Button type="button" className="mt-4 h-11" disabled={Boolean(busy) || !overview?.ai.connected || !overview?.account} onClick={() => void generateOne()}>{busy.startsWith('A IA está') ? <LoaderCircle className="animate-spin" /> : <Sparkles />}Gerar conteúdo com a IA</Button>
       <div className="mt-3 flex flex-wrap gap-2">
-        <Button type="button" variant="outline" className="h-11" disabled={Boolean(busy) || !overview?.ai.videoReady || !overview?.account} onClick={() => void orderVideo('reel')}><Clapperboard />Criar Reels com o Claude</Button>
-        <Button type="button" variant="outline" className="h-11" disabled={Boolean(busy) || !overview?.ai.videoReady || !overview?.account} onClick={() => void orderVideo('story')}><Clapperboard />Criar Story com o Claude</Button>
+        <Button type="button" variant="outline" className="h-11" disabled={Boolean(busy) || !overview?.ai.videoReady || !overview?.account} onClick={() => void orderVideo('reel')}><Clapperboard />Criar Reels com a IA</Button>
+        <Button type="button" variant="outline" className="h-11" disabled={Boolean(busy) || !overview?.ai.videoReady || !overview?.account} onClick={() => void orderVideo('story')}><Clapperboard />Criar Story com a IA</Button>
       </div>
       {overview?.ai.connected && !overview.ai.videoReady && <p className="mt-3 text-sm font-medium">Para criar vídeos, conecte o Higgsfield na tela <Link to="/conexoes" className="underline">Conexões</Link>.</p>}
-      {busy.startsWith('O Claude') && <p role="status" className="mt-3 text-sm text-muted-foreground">{busy}</p>}
+      {busy.startsWith('A IA está') && <p role="status" className="mt-3 text-sm text-muted-foreground">{busy}</p>}
     </section>
 
     <section className="mt-8 rounded-lg border bg-card p-5" aria-labelledby="auto-title">
       <div className="flex items-center justify-between gap-3"><div className="flex items-center gap-3"><Bot className="size-6 text-primary" /><h2 id="auto-title" className="text-lg font-semibold">Automação</h2></div><span className="rounded-full bg-muted px-3 py-1 text-xs font-medium">{automation?.enabled ? 'Ligada' : 'Desligada'}</span></div>
-      <p className="mt-2 text-sm text-muted-foreground">Todo dia a automação pede os Reels, um de cada vez, espalhados dentro do seu horário de postagem (tela Configurações). Cada Reels vira, algumas horas depois, um Story com o mesmo vídeo. Os tetos de gasto do Claude e do Higgsfield continuam valendo.</p>
+      <p className="mt-2 text-sm text-muted-foreground">Todo dia a automação pede os Reels, um de cada vez, espalhados dentro do seu horário de postagem (tela Configurações). Cada Reels vira, algumas horas depois, um Story com o mesmo vídeo. Os tetos de gasto da IA e do Higgsfield, quando existirem, continuam valendo.</p>
       <div className="mt-4 space-y-4">
         <label className="flex items-center gap-3 text-sm font-medium"><input type="checkbox" className="size-5" checked={autoOn} disabled={Boolean(busy)} onChange={e => setAutoOn(e.target.checked)} />Ligar a automação</label>
         <fieldset><legend className="form-label">Modo</legend>

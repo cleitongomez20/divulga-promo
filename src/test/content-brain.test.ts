@@ -191,7 +191,7 @@ describe('generating a draft', () => {
     expect(env.tables['video_assets']?.[0]).toMatchObject({ user_id: U, storage_path: env.uploads[0]?.path, media_type: 'image', mime_type: 'image/jpeg', source: 'product' });
     expect(env.tables['post_media']?.[0]).toMatchObject({ post_id: post['id'], asset_id: (env.tables['video_assets']?.[0] as Record<string, unknown>)['id'], position: 0 });
     expect(env.tables['ai_usage']?.[0]).toMatchObject({ purpose: 'conteudo', cost_micros: 7000 });
-    expect(env.tables['activity_log']?.some(entry => entry['action'] === 'Rascunho criado pelo Claude')).toBe(true);
+    expect(env.tables['activity_log']?.some(entry => entry['action'] === 'Rascunho criado pela IA')).toBe(true);
   });
   it('offers the AI only products that are not used lately', async () => {
     const other = { id: 'prod-2', user_id: U, marketplace: 'shopee', external_id: '2', title: 'Garrafa Térmica', price: 50, commission: 0.1, sales: 100, rating: 4.7, images: [IMG], url: 'https://shopee.com.br/g-i.2.2', collected_at: daysAgo(1) };

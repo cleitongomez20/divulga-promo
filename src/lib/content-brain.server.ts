@@ -1,7 +1,8 @@
 // Server-only: the content brain. The code decides what the AI may choose from and checks everything it writes;
 // the AI only picks one product and writes the text. Nothing is published here: the result is always a draft for the user to approve.
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { askClaude, type ClaudeMessage } from './claude.server';
+import { askAi } from './ai.server';
+import type { ClaudeMessage } from './claude.server';
 import {
   AI_FORMATS_NOW, assembleCaption, buildPrompt, feedbackMessage, isShopeeImageUrl, judgeAnswer, pickCandidates, subIdOf, TRIGGER_WORD, type AiOutput, type ProductCandidate,
 } from './content-brain';
@@ -89,7 +90,7 @@ export async function generateAiDraft(db: Db, p: {
   const messages: ClaudeMessage[] = [{ role: 'user', content: user }];
   let costMicros = 0; let output: AiOutput | null = null; let lastProblems: string[] = [];
   for (let attempt = 0; attempt < 2 && !output; attempt++) {
-    const reply = await askClaude(db, { userId: p.userId, masterKey: p.masterKey, purpose: 'conteudo', system, messages, maxTokens: 1500, timeoutMs: 60_000, fetcher, now });
+    const reply = await askAi(db, { userId: p.userId, masterKey: p.masterKey, purpose: 'conteudo', system, messages, maxTokens: 1500, timeoutMs: 60_000, fetcher, now });
     costMicros += reply.costMicros;
     const verdict = judgeAnswer(reply.text, ids);
     if (verdict.ok) { output = verdict.output; break; }
@@ -97,8 +98,8 @@ export async function generateAiDraft(db: Db, p: {
     messages.push({ role: 'assistant', content: reply.text }, { role: 'user', content: feedbackMessage(verdict.problems) });
   }
   if (!output) {
-    await db.from('activity_log').insert({ user_id: p.userId, action: 'Conteúdo recusado pelas regras', result: 'O Claude não escreveu dentro das regras', details: { problems: lastProblems } });
-    throw new BrainError('O Claude não conseguiu escrever dentro das regras desta vez. Tente gerar de novo.');
+    await db.from('activity_log').insert({ user_id: p.userId, action: 'Conteúdo recusado pelas regras', result: 'A IA não escreveu dentro das regras', details: { problems: lastProblems } });
+    throw new BrainError('A IA não conseguiu escrever dentro das regras desta vez. Tente gerar de novo.');
   }
   const product = candidates.find(item => item.id === output?.chosen_product_id) as ProductCandidate;
 
@@ -125,6 +126,6 @@ export async function generateAiDraft(db: Db, p: {
   const media = await db.from('post_media').insert({ user_id: p.userId, post_id: postId, asset_id: assetId, position: 0 });
   if (media.error) { await undo(); throw new BrainError('Não foi possível ligar a foto ao rascunho. Tente de novo.'); }
 
-  await db.from('activity_log').insert({ user_id: p.userId, action: 'Rascunho criado pelo Claude', result: `Foto do produto "${product.title.slice(0, 80)}"`, details: { post_id: postId, product_id: product.id, cost_micros: costMicros, link: affiliateLink !== null } });
+  await db.from('activity_log').insert({ user_id: p.userId, action: 'Rascunho criado pela IA', result: `Foto do produto "${product.title.slice(0, 80)}"`, details: { post_id: postId, product_id: product.id, cost_micros: costMicros, link: affiliateLink !== null } });
   return { postId, productTitle: product.title, costMicros, linkMissing: affiliateLink === null };
 }
