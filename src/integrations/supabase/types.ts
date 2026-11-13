@@ -52,7 +52,7 @@ export type Database = {
           last_error: string | null
           last_tested_at: string | null
           model: string
-          monthly_cap_cents: number
+          monthly_cap_cents: number | null
           provider: string
           status: string
           updated_at: string
@@ -65,7 +65,7 @@ export type Database = {
           last_error?: string | null
           last_tested_at?: string | null
           model?: string
-          monthly_cap_cents?: number
+          monthly_cap_cents?: number | null
           provider?: string
           status?: string
           updated_at?: string
@@ -78,7 +78,7 @@ export type Database = {
           last_error?: string | null
           last_tested_at?: string | null
           model?: string
-          monthly_cap_cents?: number
+          monthly_cap_cents?: number | null
           provider?: string
           status?: string
           updated_at?: string
@@ -93,6 +93,30 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      ai_settings: {
+        Row: {
+          active_provider: string
+          created_at: string
+          id: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          active_provider?: string
+          created_at?: string
+          id?: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          active_provider?: string
+          created_at?: string
+          id?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
       }
       ai_usage: {
         Row: {
@@ -123,6 +147,45 @@ export type Database = {
           model?: string
           output_tokens?: number
           purpose?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
+      automation_settings: {
+        Row: {
+          created_at: string
+          enabled: boolean
+          id: string
+          last_message: string | null
+          last_run_at: string | null
+          mode: string
+          retry_after: string | null
+          story_after_reel: boolean
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          enabled?: boolean
+          id?: string
+          last_message?: string | null
+          last_run_at?: string | null
+          mode?: string
+          retry_after?: string | null
+          story_after_reel?: boolean
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          enabled?: boolean
+          id?: string
+          last_message?: string | null
+          last_run_at?: string | null
+          mode?: string
+          retry_after?: string | null
+          story_after_reel?: boolean
+          updated_at?: string
           user_id?: string
         }
         Relationships: []
@@ -487,6 +550,80 @@ export type Database = {
           },
         ]
       }
+      media_connections: {
+        Row: {
+          created_at: string
+          credential_id: string | null
+          id: string
+          last_error: string | null
+          last_tested_at: string | null
+          monthly_cap_cents: number | null
+          provider: string
+          status: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          credential_id?: string | null
+          id?: string
+          last_error?: string | null
+          last_tested_at?: string | null
+          monthly_cap_cents?: number | null
+          provider?: string
+          status?: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          credential_id?: string | null
+          id?: string
+          last_error?: string | null
+          last_tested_at?: string | null
+          monthly_cap_cents?: number | null
+          provider?: string
+          status?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "media_connections_credential_id_fkey"
+            columns: ["credential_id"]
+            isOneToOne: false
+            referencedRelation: "connector_secrets"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      media_usage: {
+        Row: {
+          cost_micros: number
+          created_at: string
+          id: string
+          model: string
+          purpose: string
+          user_id: string
+        }
+        Insert: {
+          cost_micros?: number
+          created_at?: string
+          id?: string
+          model: string
+          purpose: string
+          user_id: string
+        }
+        Update: {
+          cost_micros?: number
+          created_at?: string
+          id?: string
+          model?: string
+          purpose?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       metrics_daily: {
         Row: {
           clicks: number
@@ -549,6 +686,89 @@ export type Database = {
             referencedColumns: ["id", "user_id"]
           },
         ]
+      }
+      openai_connections: {
+        Row: {
+          created_at: string
+          credential_id: string | null
+          id: string
+          last_error: string | null
+          last_tested_at: string | null
+          model: string
+          monthly_cap_cents: number | null
+          provider: string
+          status: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          credential_id?: string | null
+          id?: string
+          last_error?: string | null
+          last_tested_at?: string | null
+          model?: string
+          monthly_cap_cents?: number | null
+          provider?: string
+          status?: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          credential_id?: string | null
+          id?: string
+          last_error?: string | null
+          last_tested_at?: string | null
+          model?: string
+          monthly_cap_cents?: number | null
+          provider?: string
+          status?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "openai_connections_credential_id_fkey"
+            columns: ["credential_id"]
+            isOneToOne: false
+            referencedRelation: "connector_secrets"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      openai_usage: {
+        Row: {
+          cost_micros: number
+          created_at: string
+          id: string
+          input_tokens: number
+          model: string
+          output_tokens: number
+          purpose: string
+          user_id: string
+        }
+        Insert: {
+          cost_micros?: number
+          created_at?: string
+          id?: string
+          input_tokens?: number
+          model: string
+          output_tokens?: number
+          purpose: string
+          user_id: string
+        }
+        Update: {
+          cost_micros?: number
+          created_at?: string
+          id?: string
+          input_tokens?: number
+          model?: string
+          output_tokens?: number
+          purpose?: string
+          user_id?: string
+        }
+        Relationships: []
       }
       orders: {
         Row: {
@@ -756,6 +976,7 @@ export type Database = {
           updated_at: string
           user_id: string
           video_asset_id: string | null
+          video_job: Json | null
         }
         Insert: {
           affiliate_link?: string | null
@@ -782,6 +1003,7 @@ export type Database = {
           updated_at?: string
           user_id: string
           video_asset_id?: string | null
+          video_job?: Json | null
         }
         Update: {
           affiliate_link?: string | null
@@ -808,6 +1030,7 @@ export type Database = {
           updated_at?: string
           user_id?: string
           video_asset_id?: string | null
+          video_job?: Json | null
         }
         Relationships: [
           {
