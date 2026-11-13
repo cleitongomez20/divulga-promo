@@ -5,7 +5,7 @@ import { LoaderCircle, PlugZap, Save, Sparkles, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { PasswordInput } from '@/components/password-input';
 import { connectClaude, getClaudeStatus, removeClaude, testClaude, updateClaudeSettings } from '@/lib/claude.functions';
-import { CLAUDE_MODELS, DEFAULT_CAP_USD, DEFAULT_MODEL, capMicros, claudeSettingsSchema, connectClaudeSchema, formatUsd, type ClaudeModelId } from '@/lib/claude';
+import { CLAUDE_MODELS, DEFAULT_MODEL, capMicros, capUsdFromText, claudeSettingsSchema, connectClaudeSchema, formatUsd, type ClaudeModelId } from '@/lib/claude';
 
 export function ClaudeCard() {
   const queryClient = useQueryClient();
@@ -13,7 +13,7 @@ export function ClaudeCard() {
   const connect = useServerFn(connectClaude); const test = useServerFn(testClaude); const update = useServerFn(updateClaudeSettings); const remove = useServerFn(removeClaude);
   const [apiKey, setApiKey] = useState('');
   const [model, setModel] = useState<ClaudeModelId>(DEFAULT_MODEL);
-  const [cap, setCap] = useState(String(DEFAULT_CAP_USD));
+  const [cap, setCap] = useState('');
   const [replacing, setReplacing] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [busy, setBusy] = useState('');
@@ -23,7 +23,7 @@ export function ClaudeCard() {
   useEffect(() => {
     if (!status?.connected) return;
     setModel((CLAUDE_MODELS.find(item => item.id === status.model)?.id ?? DEFAULT_MODEL) as ClaudeModelId);
-    setCap(String(status.monthlyCapCents / 100));
+    setCap(status.monthlyCapCents === null ? '' : String(status.monthlyCapCents / 100));
   }, [status?.connected, status?.model, status?.monthlyCapCents]);
 
   async function act(name: string, work: () => Promise<{ status: string; message?: string }>) {
@@ -37,7 +37,7 @@ export function ClaudeCard() {
   }
   function submitConnect(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const parsed = connectClaudeSchema.safeParse({ apiKey, model, monthlyCapUsd: Number(cap.replace(',', '.')) });
+    const parsed = connectClaudeSchema.safeParse({ apiKey, model, monthlyCapUsd: capUsdFromText(cap) });
     if (!parsed.success) { setNotice(parsed.error.issues[0]?.message ?? 'Confira os dados.'); return; }
     const sent = parsed.data;
     setApiKey(''); // the key is never kept in the screen after sending
@@ -45,7 +45,7 @@ export function ClaudeCard() {
   }
   function submitSettings(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const parsed = claudeSettingsSchema.safeParse({ model, monthlyCapUsd: Number(cap.replace(',', '.')) });
+    const parsed = claudeSettingsSchema.safeParse({ model, monthlyCapUsd: capUsdFromText(cap) });
     if (!parsed.success) { setNotice(parsed.error.issues[0]?.message ?? 'Confira os dados.'); return; }
     const sent = parsed.data;
     void act('settings', () => update({ data: sent }));
@@ -53,7 +53,7 @@ export function ClaudeCard() {
 
   const connected = Boolean(status?.connected);
   const showKeyForm = !connected || replacing;
-  const spent = status?.spentMicros ?? 0; const limit = capMicros(status?.monthlyCapCents ?? 0);
+  const spent = status?.spentMicros ?? 0; const hasCap = status?.monthlyCapCents !== null && status?.monthlyCapCents !== undefined; const limit = capMicros(status?.monthlyCapCents ?? 0);
   const percent = limit > 0 ? Math.min(100, Math.round((spent / limit) * 100)) : 0;
   const label = !connected ? 'Não conectado' : status?.status === 'invalid' ? 'Chave recusada' : 'Conectado';
 
@@ -74,8 +74,8 @@ export function ClaudeCard() {
       : <form onSubmit={submitSettings} className="mt-6 space-y-5">
         <ModelAndCap model={model} cap={cap} setModel={setModel} setCap={setCap} disabled={Boolean(busy)} />
         <div>
-          <div className="flex items-baseline justify-between text-sm"><span>Gasto estimado neste mês</span><span className="font-medium">{formatUsd(spent)} de {formatUsd(limit)}</span></div>
-          <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted" role="progressbar" aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100}><div className={`h-full ${percent >= 90 ? 'bg-destructive' : 'bg-primary'}`} style={{ width: `${percent}%` }} /></div>
+          <div className="flex items-baseline justify-between text-sm"><span>Gasto estimado neste mês</span><span className="font-medium">{hasCap ? `${formatUsd(spent)} de ${formatUsd(limit)}` : `${formatUsd(spent)} (sem teto)`}</span></div>
+          {hasCap && <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted" role="progressbar" aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100}><div className={`h-full ${percent >= 90 ? 'bg-destructive' : 'bg-primary'}`} style={{ width: `${percent}%` }} /></div>}
           <p className="mt-2 text-xs text-muted-foreground">Estimativa pelo preço de tabela. A cobrança oficial é a do Claude Console. Ao chegar no teto, o Claude para de ser chamado até você aumentar o valor ou o mês virar.</p>
         </div>
         <Button type="submit" disabled={Boolean(busy)}>{busy === 'settings' ? <LoaderCircle className="animate-spin" /> : <Save />}Salvar ajustes</Button>
@@ -100,8 +100,8 @@ function ModelAndCap(props: { model: ClaudeModelId; cap: string; setModel: (valu
       <select id="claude-model" className="field" value={props.model} disabled={props.disabled} onChange={e => props.setModel(e.target.value as ClaudeModelId)}>
         {CLAUDE_MODELS.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
       </select></div>
-    <div><label className="form-label" htmlFor="claude-cap">Teto de gasto por mês (US$)</label>
-      <input id="claude-cap" className="field" inputMode="decimal" required value={props.cap} disabled={props.disabled} onChange={e => props.setCap(e.target.value)} />
-      <p className="mt-2 text-xs text-muted-foreground">É uma trava do app: ao atingir esse valor estimado, o Claude para de ser chamado até o mês virar ou você aumentar o teto.</p></div>
+    <div><label className="form-label" htmlFor="claude-cap">Teto de gasto por mês (US$), opcional</label>
+      <input id="claude-cap" className="field" inputMode="decimal" placeholder="Sem limite" value={props.cap} disabled={props.disabled} onChange={e => props.setCap(e.target.value)} />
+      <p className="mt-2 text-xs text-muted-foreground">Deixe vazio para não ter limite. Se preencher, é uma trava do app: ao atingir esse valor estimado, o Claude para de ser chamado até o mês virar ou você mudar o teto.</p></div>
   </>;
 }

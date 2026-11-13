@@ -91,7 +91,8 @@ export async function askClaude(db: Db, p: { userId: string; masterKey: string; 
   const credentialId = str(connection?.['credential_id']);
   if (!connection || !credentialId) throw new ClaudeError('not_connected');
   if (!p.test && str(connection['status']) === 'invalid') throw new ClaudeError('auth');
-  if (!p.test && (await monthSpentMicros(db, p.userId, now())) >= capMicros(num(connection['monthly_cap_cents']))) throw new ClaudeError('cap');
+  const cap = capCentsOf(connection); // no cap saved means no limit
+  if (!p.test && cap !== null && (await monthSpentMicros(db, p.userId, now())) >= capMicros(cap)) throw new ClaudeError('cap');
   const apiKey = await openKey(db, p.userId, p.masterKey, credentialId);
   const model = str(connection['model']) || DEFAULT_MODEL;
   try {
@@ -108,7 +109,7 @@ export async function askClaude(db: Db, p: { userId: string; masterKey: string; 
 const TEST_MESSAGE: ClaudeMessage[] = [{ role: 'user', content: 'Responda somente com a palavra: ok' }];
 
 /** Checks the key with a tiny call and, only if it works, stores it sealed (replacing any previous key). */
-export async function connectClaudeKey(db: Db, p: { userId: string; masterKey: string; apiKey: string; model: string; capCents: number; fetcher?: Fetcher; now?: () => number }): Promise<void> {
+export async function connectClaudeKey(db: Db, p: { userId: string; masterKey: string; apiKey: string; model: string; capCents: number | null; fetcher?: Fetcher; now?: () => number }): Promise<void> {
   const fetcher = p.fetcher ?? fetch; const now = p.now ?? Date.now;
   const call = await callClaude(fetcher, { apiKey: p.apiKey, model: p.model, messages: TEST_MESSAGE, maxTokens: 16, timeoutMs: 20_000 });
   const previous = await connectionOf(db, p.userId);
@@ -145,12 +146,14 @@ export async function removeClaudeConnection(db: Db, userId: string): Promise<vo
   if (credentialId) await db.from('connector_secrets').delete().eq('id', credentialId).eq('user_id', userId);
 }
 
-export type ClaudeStatusData = { connected: boolean; status: string; model: string; monthlyCapCents: number; spentMicros: number; lastTestedAt: string | null; lastError: string | null };
+/** The monthly cap in cents, or null when there is no limit. */
+const capCentsOf = (connection: Row): number | null => (typeof connection['monthly_cap_cents'] === 'number' && connection['monthly_cap_cents'] > 0 ? connection['monthly_cap_cents'] : null);
+export type ClaudeStatusData = { connected: boolean; status: string; model: string; monthlyCapCents: number | null; spentMicros: number; lastTestedAt: string | null; lastError: string | null };
 export async function loadClaudeStatus(db: Db, userId: string, nowMs: number): Promise<ClaudeStatusData> {
   const connection = await connectionOf(db, userId);
-  if (!connection || !str(connection['credential_id'])) return { connected: false, status: 'disconnected', model: DEFAULT_MODEL, monthlyCapCents: 1000, spentMicros: 0, lastTestedAt: null, lastError: null };
+  if (!connection || !str(connection['credential_id'])) return { connected: false, status: 'disconnected', model: DEFAULT_MODEL, monthlyCapCents: null, spentMicros: 0, lastTestedAt: null, lastError: null };
   return {
-    connected: true, status: str(connection['status']) || 'connected', model: str(connection['model']) || DEFAULT_MODEL, monthlyCapCents: num(connection['monthly_cap_cents']) || 1000,
+    connected: true, status: str(connection['status']) || 'connected', model: str(connection['model']) || DEFAULT_MODEL, monthlyCapCents: capCentsOf(connection),
     spentMicros: await monthSpentMicros(db, userId, nowMs), lastTestedAt: str(connection['last_tested_at']) || null, lastError: str(connection['last_error']) || null,
   };
 }

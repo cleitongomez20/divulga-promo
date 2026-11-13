@@ -1,7 +1,7 @@
 import { createServerFn } from '@tanstack/react-start';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { requireSupabaseAuth } from '@/integrations/supabase/auth-middleware';
-import { centsOfUsd } from './claude';
+import { capCentsOrNull, capText } from './claude';
 import { connectHiggsfieldSchema, higgsfieldErrorMessage, higgsfieldSettingsSchema } from './higgsfield';
 import type { HiggsfieldStatusData } from './higgsfield.server';
 
@@ -41,8 +41,8 @@ export const connectHiggsfield = createServerFn({ method: 'POST' }).middleware([
       const db = await admin();
       if (await tooSoon(db, context.userId)) return { status: 'error', message: 'Aguarde alguns segundos e tente de novo.' };
       const { connectHiggsfieldKey } = await import('./higgsfield.server');
-      await connectHiggsfieldKey(db, { userId: context.userId, masterKey: masterKey(), keyId: data.keyId, keySecret: data.keySecret, capCents: centsOfUsd(data.monthlyCapUsd) });
-      await log(db, context.userId, 'Higgsfield conectado', `Teto mensal de US$ ${data.monthlyCapUsd}`);
+      await connectHiggsfieldKey(db, { userId: context.userId, masterKey: masterKey(), keyId: data.keyId, keySecret: data.keySecret, capCents: capCentsOrNull(data.monthlyCapUsd) });
+      await log(db, context.userId, 'Higgsfield conectado', capText(data.monthlyCapUsd).replace(/^./, c => c.toUpperCase()));
       return { status: 'ok', message: 'Higgsfield conectado. A chave foi aceita.' };
     } catch (error) { return failure(error); }
   });
@@ -62,10 +62,10 @@ export const updateHiggsfieldSettings = createServerFn({ method: 'POST' }).middl
     try {
       const db = await admin();
       if (await tooSoon(db, context.userId)) return { status: 'error', message: 'Aguarde alguns segundos e tente de novo.' };
-      const { data: changed, error } = await db.from('media_connections').update({ monthly_cap_cents: centsOfUsd(data.monthlyCapUsd) }).eq('user_id', context.userId).select('id');
+      const { data: changed, error } = await db.from('media_connections').update({ monthly_cap_cents: capCentsOrNull(data.monthlyCapUsd) }).eq('user_id', context.userId).select('id');
       if (error) return { status: 'error', message: 'Não foi possível salvar agora. Tente de novo.' };
       if (!changed?.length) return { status: 'error', message: higgsfieldErrorMessage('not_connected') };
-      await log(db, context.userId, 'Ajustes do Higgsfield salvos', `Teto mensal de US$ ${data.monthlyCapUsd}`);
+      await log(db, context.userId, 'Ajustes do Higgsfield salvos', capText(data.monthlyCapUsd).replace(/^./, c => c.toUpperCase()));
       return { status: 'ok', message: 'Ajustes salvos.' };
     } catch (error) { return failure(error); }
   });

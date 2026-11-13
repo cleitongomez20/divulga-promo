@@ -5,8 +5,8 @@ import { Clapperboard, LoaderCircle, PlugZap, Save, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button';
 import { PasswordInput } from '@/components/password-input';
 import { connectHiggsfield, getHiggsfieldStatus, removeHiggsfield, testHiggsfield, updateHiggsfieldSettings } from '@/lib/higgsfield.functions';
-import { DEFAULT_HF_CAP_USD, connectHiggsfieldSchema, higgsfieldSettingsSchema } from '@/lib/higgsfield';
-import { capMicros, formatUsd } from '@/lib/claude';
+import { connectHiggsfieldSchema, higgsfieldSettingsSchema } from '@/lib/higgsfield';
+import { capMicros, capUsdFromText, formatUsd } from '@/lib/claude';
 
 export function HiggsfieldCard() {
   const queryClient = useQueryClient();
@@ -14,14 +14,14 @@ export function HiggsfieldCard() {
   const connect = useServerFn(connectHiggsfield); const test = useServerFn(testHiggsfield); const update = useServerFn(updateHiggsfieldSettings); const remove = useServerFn(removeHiggsfield);
   const [keyId, setKeyId] = useState('');
   const [keySecret, setKeySecret] = useState('');
-  const [cap, setCap] = useState(String(DEFAULT_HF_CAP_USD));
+  const [cap, setCap] = useState('');
   const [replacing, setReplacing] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [busy, setBusy] = useState('');
   const [notice, setNotice] = useState('');
 
   // Shows what is saved in the fields once the status arrives.
-  useEffect(() => { if (status?.connected) setCap(String(status.monthlyCapCents / 100)); }, [status?.connected, status?.monthlyCapCents]);
+  useEffect(() => { if (status?.connected) setCap(status.monthlyCapCents === null ? '' : String(status.monthlyCapCents / 100)); }, [status?.connected, status?.monthlyCapCents]);
 
   async function act(name: string, work: () => Promise<{ status: string; message?: string }>) {
     setBusy(name); setNotice('');
@@ -34,7 +34,7 @@ export function HiggsfieldCard() {
   }
   function submitConnect(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const parsed = connectHiggsfieldSchema.safeParse({ keyId, keySecret, monthlyCapUsd: Number(cap.replace(',', '.')) });
+    const parsed = connectHiggsfieldSchema.safeParse({ keyId, keySecret, monthlyCapUsd: capUsdFromText(cap) });
     if (!parsed.success) { setNotice(parsed.error.issues[0]?.message ?? 'Confira os dados.'); return; }
     const sent = parsed.data;
     setKeyId(''); setKeySecret(''); // the key is never kept on the screen after sending
@@ -42,7 +42,7 @@ export function HiggsfieldCard() {
   }
   function submitSettings(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const parsed = higgsfieldSettingsSchema.safeParse({ monthlyCapUsd: Number(cap.replace(',', '.')) });
+    const parsed = higgsfieldSettingsSchema.safeParse({ monthlyCapUsd: capUsdFromText(cap) });
     if (!parsed.success) { setNotice(parsed.error.issues[0]?.message ?? 'Confira os dados.'); return; }
     const sent = parsed.data;
     void act('settings', () => update({ data: sent }));
@@ -50,7 +50,7 @@ export function HiggsfieldCard() {
 
   const connected = Boolean(status?.connected);
   const showKeyForm = !connected || replacing;
-  const spent = status?.spentMicros ?? 0; const limit = capMicros(status?.monthlyCapCents ?? 0);
+  const spent = status?.spentMicros ?? 0; const hasCap = status?.monthlyCapCents !== null && status?.monthlyCapCents !== undefined; const limit = capMicros(status?.monthlyCapCents ?? 0);
   const percent = limit > 0 ? Math.min(100, Math.round((spent / limit) * 100)) : 0;
   const label = !connected ? 'Não conectado' : status?.status === 'invalid' ? 'Chave recusada' : 'Conectado';
 
@@ -73,8 +73,8 @@ export function HiggsfieldCard() {
       : <form onSubmit={submitSettings} className="mt-6 space-y-5">
         <CapField cap={cap} setCap={setCap} disabled={Boolean(busy)} />
         <div>
-          <div className="flex items-baseline justify-between text-sm"><span>Gasto estimado neste mês</span><span className="font-medium">{formatUsd(spent)} de {formatUsd(limit)}</span></div>
-          <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted" role="progressbar" aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100}><div className={`h-full ${percent >= 90 ? 'bg-destructive' : 'bg-primary'}`} style={{ width: `${percent}%` }} /></div>
+          <div className="flex items-baseline justify-between text-sm"><span>Gasto estimado neste mês</span><span className="font-medium">{hasCap ? `${formatUsd(spent)} de ${formatUsd(limit)}` : `${formatUsd(spent)} (sem teto)`}</span></div>
+          {hasCap && <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted" role="progressbar" aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100}><div className={`h-full ${percent >= 90 ? 'bg-destructive' : 'bg-primary'}`} style={{ width: `${percent}%` }} /></div>}
           <p className="mt-2 text-xs text-muted-foreground">Estimativa. O valor real de cada geração e o seu saldo estão no Console do Higgsfield. Quando a estimativa chegar no teto, as gerações param até você aumentar o valor ou o mês virar.</p>
         </div>
         <Button type="submit" disabled={Boolean(busy)}>{busy === 'settings' ? <LoaderCircle className="animate-spin" /> : <Save />}Salvar ajustes</Button>
@@ -94,7 +94,7 @@ export function HiggsfieldCard() {
 }
 
 function CapField(props: { cap: string; setCap: (value: string) => void; disabled: boolean }) {
-  return <div><label className="form-label" htmlFor="hf-cap">Teto de gasto por mês (US$)</label>
-    <input id="hf-cap" className="field" inputMode="decimal" required value={props.cap} disabled={props.disabled} onChange={e => props.setCap(e.target.value)} />
-    <p className="mt-2 text-xs text-muted-foreground">É uma trava do app: ao atingir esse valor estimado, o app para de pedir imagens e vídeos até o mês virar ou você aumentar o teto.</p></div>;
+  return <div><label className="form-label" htmlFor="hf-cap">Teto de gasto por mês (US$), opcional</label>
+    <input id="hf-cap" className="field" inputMode="decimal" placeholder="Sem limite" value={props.cap} disabled={props.disabled} onChange={e => props.setCap(e.target.value)} />
+    <p className="mt-2 text-xs text-muted-foreground">Deixe vazio para não ter limite. Se preencher, é uma trava do app: ao atingir esse valor estimado, o app para de pedir imagens e vídeos até o mês virar ou você mudar o teto.</p></div>;
 }

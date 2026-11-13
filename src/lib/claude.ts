@@ -28,6 +28,12 @@ export function estimateCostMicros(model: string, inputTokens: number, outputTok
 }
 export const capMicros = (capCents: number) => capCents * 10_000;
 export const centsOfUsd = (usd: number) => Math.round(usd * 100);
+/** Cap in cents for the database, or null when the user chose no limit. */
+export const capCentsOrNull = (usd: number | null) => (usd === null ? null : centsOfUsd(usd));
+/** What the user typed in a cap field: empty means no limit (null). */
+export const capUsdFromText = (text: string): number | null => (text.trim() === '' ? null : Number(text.replace(',', '.')));
+/** Text for the activity log. */
+export const capText = (usd: number | null) => (usd === null ? 'sem teto de gasto' : `teto mensal de US$ ${usd}`);
 export function formatUsd(micros: number): string {
   const dollars = micros / 1_000_000;
   return `US$ ${dollars.toLocaleString('pt-BR', { minimumFractionDigits: dollars < 0.1 ? 4 : 2, maximumFractionDigits: dollars < 0.1 ? 4 : 2 })}`;
@@ -40,7 +46,8 @@ export function monthStartIso(ms: number, timeZone: string): string | null {
 export const claudeKeySchema = z.string().trim().min(30, 'Cole a chave completa.').max(300, 'A chave está grande demais.')
   .regex(/^sk-ant-[A-Za-z0-9_-]+$/, 'A chave do Claude começa com sk-ant-. Confira se ela foi copiada inteira.');
 const modelSchema = z.enum(MODEL_IDS);
-const capSchema = z.number({ message: 'Informe o teto de gasto mensal.' }).min(1, 'O teto mínimo é US$ 1.').max(10_000, 'O teto máximo é US$ 10.000.');
+/** The cap is optional: empty (null) means no limit; a number must be a real amount between US$ 1 and US$ 10,000. */
+const capSchema = z.number({ message: 'Informe um valor para o teto ou deixe vazio para não ter limite.' }).min(1, 'O teto mínimo é US$ 1.').max(10_000, 'O teto máximo é US$ 10.000.').nullable();
 export const connectClaudeSchema = z.object({ apiKey: claudeKeySchema, model: modelSchema, monthlyCapUsd: capSchema });
 export const claudeSettingsSchema = z.object({ model: modelSchema, monthlyCapUsd: capSchema });
 
@@ -55,7 +62,7 @@ export function claudeErrorMessage(kind: ClaudeErrorKind, detail = ''): string {
     case 'network': return 'Não consegui falar com o Claude agora. Tente de novo.';
     case 'timeout': return 'O Claude demorou demais para responder. Tente de novo.';
     case 'bad_request': return `O Claude não aceitou o pedido${detail ? ` (${detail.slice(0, 160)})` : ''}.`;
-    case 'cap': return 'O teto de gasto do mês foi atingido. Aumente o teto na tela Conexões para continuar.';
+    case 'cap': return 'O teto de gasto do mês foi atingido. Aumente ou apague o teto na tela Conexões para continuar.';
     case 'not_connected': return 'Conecte o Claude na tela Conexões primeiro.';
     default: return 'O Claude teve um problema do lado dele. Tente de novo.';
   }

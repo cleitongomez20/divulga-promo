@@ -1,7 +1,7 @@
 import { createServerFn } from '@tanstack/react-start';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { requireSupabaseAuth } from '@/integrations/supabase/auth-middleware';
-import { centsOfUsd, claudeErrorMessage, claudeSettingsSchema, connectClaudeSchema } from './claude';
+import { capCentsOrNull, capText, claudeErrorMessage, claudeSettingsSchema, connectClaudeSchema } from './claude';
 import type { ClaudeStatusData } from './claude.server';
 
 export type ClaudeStatus = ClaudeStatusData;
@@ -39,8 +39,8 @@ export const connectClaude = createServerFn({ method: 'POST' }).middleware([requ
       const db = await admin();
       if (await tooSoon(db, context.userId)) return { status: 'error', message: 'Aguarde alguns segundos e tente de novo.' };
       const { connectClaudeKey } = await import('./claude.server');
-      await connectClaudeKey(db, { userId: context.userId, masterKey: masterKey(), apiKey: data.apiKey, model: data.model, capCents: centsOfUsd(data.monthlyCapUsd) });
-      await log(db, context.userId, 'Claude conectado', `Modelo ${data.model}, teto mensal de US$ ${data.monthlyCapUsd}`);
+      await connectClaudeKey(db, { userId: context.userId, masterKey: masterKey(), apiKey: data.apiKey, model: data.model, capCents: capCentsOrNull(data.monthlyCapUsd) });
+      await log(db, context.userId, 'Claude conectado', `Modelo ${data.model}, ${capText(data.monthlyCapUsd)}`);
       return { status: 'ok', message: 'Claude conectado e testado com sucesso.' };
     } catch (error) { return failure(error); }
   });
@@ -60,10 +60,10 @@ export const updateClaudeSettings = createServerFn({ method: 'POST' }).middlewar
     try {
       const db = await admin();
       if (await tooSoon(db, context.userId)) return { status: 'error', message: 'Aguarde alguns segundos e tente de novo.' };
-      const { data: changed, error } = await db.from('ai_connections').update({ model: data.model, monthly_cap_cents: centsOfUsd(data.monthlyCapUsd) }).eq('user_id', context.userId).select('id');
+      const { data: changed, error } = await db.from('ai_connections').update({ model: data.model, monthly_cap_cents: capCentsOrNull(data.monthlyCapUsd) }).eq('user_id', context.userId).select('id');
       if (error) return { status: 'error', message: 'Não foi possível salvar agora. Tente de novo.' };
       if (!changed?.length) return { status: 'error', message: claudeErrorMessage('not_connected') };
-      await log(db, context.userId, 'Ajustes do Claude salvos', `Modelo ${data.model}, teto mensal de US$ ${data.monthlyCapUsd}`);
+      await log(db, context.userId, 'Ajustes do Claude salvos', `Modelo ${data.model}, ${capText(data.monthlyCapUsd)}`);
       return { status: 'ok', message: 'Ajustes salvos.' };
     } catch (error) { return failure(error); }
   });

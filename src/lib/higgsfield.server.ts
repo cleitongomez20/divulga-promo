@@ -100,7 +100,8 @@ export async function credentialsForJob(db: Db, p: { userId: string; masterKey: 
   const credentialId = str(connection?.['credential_id']);
   if (!connection || !credentialId) throw new HiggsfieldError('not_connected');
   if (str(connection['status']) === 'invalid') throw new HiggsfieldError('auth');
-  if ((await monthMediaSpentMicros(db, p.userId, now())) + p.estimateMicros > capMicros(num(connection['monthly_cap_cents']))) throw new HiggsfieldError('cap');
+  const cap = capCentsOf(connection); // no cap saved means no limit
+  if (cap !== null && (await monthMediaSpentMicros(db, p.userId, now())) + p.estimateMicros > capMicros(cap)) throw new HiggsfieldError('cap');
   return openCredentials(db, p.userId, p.masterKey, credentialId);
 }
 /** Opens the stored key with no cap check: used to follow up on jobs that were already ordered and paid for. */
@@ -116,7 +117,7 @@ export async function markInvalid(db: Db, userId: string) {
 }
 
 /** Checks the key and, only if Higgsfield accepts it, stores it sealed (replacing any previous key). */
-export async function connectHiggsfieldKey(db: Db, p: { userId: string; masterKey: string; keyId: string; keySecret: string; capCents: number; fetcher?: Fetcher; now?: () => number }): Promise<void> {
+export async function connectHiggsfieldKey(db: Db, p: { userId: string; masterKey: string; keyId: string; keySecret: string; capCents: number | null; fetcher?: Fetcher; now?: () => number }): Promise<void> {
   const fetcher = p.fetcher ?? fetch; const now = p.now ?? Date.now;
   await checkCredentials(fetcher, { keyId: p.keyId, keySecret: p.keySecret });
   const previous = await connectionOf(db, p.userId);
@@ -154,12 +155,14 @@ export async function removeHiggsfieldConnection(db: Db, userId: string): Promis
   if (credentialId) await db.from('connector_secrets').delete().eq('id', credentialId).eq('user_id', userId);
 }
 
-export type HiggsfieldStatusData = { connected: boolean; status: string; monthlyCapCents: number; spentMicros: number; lastTestedAt: string | null; lastError: string | null };
+/** The monthly cap in cents, or null when there is no limit. */
+const capCentsOf = (connection: Row): number | null => (typeof connection['monthly_cap_cents'] === 'number' && connection['monthly_cap_cents'] > 0 ? connection['monthly_cap_cents'] : null);
+export type HiggsfieldStatusData = { connected: boolean; status: string; monthlyCapCents: number | null; spentMicros: number; lastTestedAt: string | null; lastError: string | null };
 export async function loadHiggsfieldStatus(db: Db, userId: string, nowMs: number): Promise<HiggsfieldStatusData> {
   const connection = await connectionOf(db, userId);
-  if (!connection || !str(connection['credential_id'])) return { connected: false, status: 'disconnected', monthlyCapCents: 1000, spentMicros: 0, lastTestedAt: null, lastError: null };
+  if (!connection || !str(connection['credential_id'])) return { connected: false, status: 'disconnected', monthlyCapCents: null, spentMicros: 0, lastTestedAt: null, lastError: null };
   return {
-    connected: true, status: str(connection['status']) || 'connected', monthlyCapCents: num(connection['monthly_cap_cents']) || 1000,
+    connected: true, status: str(connection['status']) || 'connected', monthlyCapCents: capCentsOf(connection),
     spentMicros: await monthMediaSpentMicros(db, userId, nowMs), lastTestedAt: str(connection['last_tested_at']) || null, lastError: str(connection['last_error']) || null,
   };
 }
