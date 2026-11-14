@@ -39,29 +39,10 @@ export const saveAutomation = createServerFn({ method: 'POST' }).middleware([req
         last_message: data.enabled ? 'Automação ligada. O primeiro Reels é pedido no próximo horário do dia.' : 'Automação desligada.',
       }, { onConflict: 'user_id' });
       if (saved.error) return { status: 'error', message: 'Não foi possível salvar agora. Tente de novo.' };
+      // The character option is saved on its own: it needs the new column, and a missing column must never stop the automation from being saved.
+      const speech = await db.from('automation_settings').update({ storyboard_speech: data.storyboardSpeech }).eq('user_id', userId);
       await db.from('activity_log').insert({ user_id: userId, action: data.enabled ? 'Automação ligada' : 'Automação desligada', result: data.enabled ? (data.mode === 'auto' ? 'Modo totalmente automático' : 'Modo com aprovação') : 'Desligada pelo usuário', details: { mode: data.mode, story_after_reel: data.storyAfterReel } });
+      if (speech.error) return { status: 'ok', message: `${data.enabled ? 'Automação ligada.' : 'Automação desligada.'} A opção do personagem só vale depois de rodar o SQL novo no Supabase.` };
       return { status: 'ok', message: data.enabled ? 'Automação ligada.' : 'Automação desligada.' };
     } catch { return { status: 'error', message: 'Não foi possível salvar agora. Tente de novo.' }; }
   });
-
-/** The "create the next Reels now" button: it ignores the clock, but not the daily target, the failure limit, the approval limit or the spending caps. */
-export const planAutomationNow = createServerFn({ method: 'POST' }).middleware([requireSupabaseAuth]).handler(async ({ context }): Promise<AutomationResult> => {
-  try {
-    const { supabaseAdmin } = await import('@/integrations/supabase/client.server');
-    const db = supabaseAdmin as unknown as SupabaseClient; const userId = context.userId;
-    const key = process.env['CONNECTOR_ENCRYPTION_KEY'];
-    if (!key) return { status: 'error', message: 'O armazenamento seguro ainda não está disponível.' };
-    const { data: delay, error: slotError } = await db.rpc('reserve_connector_slot', { p_scope: `auto-now:${userId}`, p_interval_ms: 8000 });
-    if (!slotError && typeof delay === 'number' && delay > 0) return { status: 'error', message: 'Aguarde alguns segundos e tente de novo.' };
-    const { planNextForUser, loadAutomationView } = await import('./automation.server');
-    const { makeLinkFor } = await import('./shopee-link.server');
-    const outcome = await planNextForUser(db, { userId, masterKey: key, force: true, makeLink: makeLinkFor(supabaseAdmin, db, userId) });
-    if (outcome.created) return { status: 'ok', message: 'Reels pedido. Ele leva alguns minutos e aparece na lista.' };
-    const view = await loadAutomationView(db, userId, Date.now());
-    const reasons: Record<string, string> = {
-      disabled: 'Ligue a automação primeiro.', done: 'A meta de hoje já foi atingida.', pending: 'Há vídeos esperando a sua aprovação.', failures: 'A automação descansa até amanhã por causa das falhas de hoje.',
-      busy: 'Outro pedido está em andamento. Aguarde um minuto.', 'no-account': 'Conecte o Instagram primeiro.', backoff: 'A automação está esperando antes de tentar de novo.', error: view.message ?? 'Não foi possível pedir o Reels agora.',
-    };
-    return { status: 'error', message: reasons[outcome.reason] ?? view.message ?? 'Não foi possível pedir o Reels agora.' };
-  } catch { return { status: 'error', message: 'Não foi possível pedir o Reels agora. Tente de novo.' }; }
-});
