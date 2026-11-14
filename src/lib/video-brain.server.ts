@@ -24,8 +24,8 @@ export async function startVideoDraft(db: Db, p: {
   userId: string; masterKey: string; format: VideoFormat; fetcher?: Fetcher; now?: () => number;
   /** Turns a Shopee product address into a tracked affiliate link. Returns null when it cannot (the post is then created without a link). */
   makeLink?: (productUrl: string, subIds: string[]) => Promise<string | null>;
-  /** Set by the automation: the post is marked as made by it, remembers the planned time, and (in automatic mode) is scheduled by itself when the video is ready. */
-  auto?: { mode: AutomationMode; scheduledAt: string };
+  /** Set by the automation (or by the manual "generate with AI" button, with manual: true): the post remembers the planned time and, in automatic mode, is scheduled by itself when the video is ready. Only the automation marks the post as its own. */
+  auto?: { mode: AutomationMode; scheduledAt: string; manual?: boolean };
 }): Promise<VideoDraftResult> {
   const fetcher = p.fetcher ?? fetch; const now = p.now ?? Date.now; const at = now();
 
@@ -70,7 +70,7 @@ export async function startVideoDraft(db: Db, p: {
   const job: VideoJob = { requestId: null, tool: output.tool, endpoint: tool.endpoint, duration: output.duration, framePath: frame.path, estimatedMicros, startedAt: at };
   const created = await db.from('posts').insert({
     id: postId, user_id: p.userId, instagram_account_id: accountId, product_id: product.id, format: p.format, status: 'rendering', scheduled_at: p.auto?.scheduledAt ?? null, caption: videoCaption(p.format, output),
-    trigger_word: p.format === 'reel' ? TRIGGER_WORD : null, affiliate_link: affiliateLink, sub_id: subId, idempotency_key: crypto.randomUUID(), source: p.auto ? 'auto' : 'ai', video_job: job,
+    trigger_word: p.format === 'reel' ? TRIGGER_WORD : null, affiliate_link: affiliateLink, sub_id: subId, idempotency_key: crypto.randomUUID(), source: p.auto && !p.auto.manual ? 'auto' : 'ai', video_job: job,
     ai_plan: { reason: output.reason, angle: output.angle, hook: output.hook, tool: output.tool, duration: output.duration, costMicros: claudeMicros, estimatedMicros, linkMissing: affiliateLink === null, autoMode: p.auto?.mode ?? null, generatedAt: new Date(at).toISOString() },
   });
   if (created.error) { await removeFrame(); throw new BrainError('Não foi possível criar o rascunho do vídeo. Tente de novo.'); }
