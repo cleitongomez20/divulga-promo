@@ -3,7 +3,7 @@ import { memoryDb, type Rows } from './memory-db';
 import {
   LATE_CUTOFF_MS, MIN_LEAD_MS, ORDER_LEAD_MS, DEFAULT_AUTOMATION_SETTINGS, decideOrder, reelsPerDay, seededUnit, slotTimes, storyTime, windowOfDay, automationSettingsSchema,
 } from '@/lib/automation';
-import { createStoriesForUser, deterministicUuid, loadAutomationView, planNextForUser, runAutomation } from '@/lib/automation.server';
+import { createStoriesForUser, deterministicUuid, loadAutomationView, planNextForUser, runAutomation, storyboardSpeechOf } from '@/lib/automation.server';
 import { connectClaudeKey } from '@/lib/claude.server';
 import { connectHiggsfieldKey } from '@/lib/higgsfield.server';
 import { dayBounds } from '@/lib/publishing';
@@ -240,6 +240,14 @@ describe('planning the next Reels', () => {
     expect(await loadAutomationView(w.db as never, U, NOON)).toMatchObject({ enabled: true, mode: 'auto', storyAfterReel: true, madeToday: 2, targetToday: 3, pending: 1 });
     const off = await world({ automationRow: null });
     expect(await loadAutomationView(off.db as never, U, NOON)).toMatchObject({ enabled: false, mode: 'approval', madeToday: 0, targetToday: 3 });
+  });
+  it('shows whether the character speaks: yes by default, and what was saved', async () => {
+    const w = await world({ mode: 'auto' });
+    expect(await loadAutomationView(w.db as never, U, NOON)).toMatchObject({ storyboardSpeech: true });
+    (w.tables['automation_settings']![0] as Record<string, unknown>)['storyboard_speech'] = false;
+    expect(await loadAutomationView(w.db as never, U, NOON)).toMatchObject({ storyboardSpeech: false });
+    expect(await storyboardSpeechOf(w.db as never, U)).toBe(false);
+    expect(await storyboardSpeechOf(w.db as never, 'someone-without-settings')).toBe(true);
   });
 });
 
