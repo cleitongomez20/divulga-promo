@@ -138,7 +138,7 @@ describe('downloading the product photo', () => {
 });
 
 type Env = { tables: Record<string, Rows>; db: unknown; uploads: { path: string; size: number; contentType: string }[]; removed: string[]; claudeBodies: Record<string, unknown>[]; fetcher: typeof fetch };
-async function setup(options: { products?: Rows; recent?: Rows; account?: boolean; answers?: string[]; image?: Uint8Array; capCents?: number; usage?: Rows; failPostInsert?: boolean } = {}): Promise<Env> {
+async function setup(options: { products?: Rows; recent?: Rows; account?: boolean; answers?: string[]; image?: Uint8Array; capCents?: number; usage?: Rows; failPostInsert?: boolean; failImage?: (url: string) => boolean } = {}): Promise<Env> {
   const answers = [...(options.answers ?? [JSON.stringify(good)])];
   const claudeBodies: Record<string, unknown>[] = [];
   let live = false; // the scripted answers only start after the connection test has been made
@@ -149,6 +149,7 @@ async function setup(options: { products?: Rows; recent?: Rows; account?: boolea
       const text = live ? (answers.shift() ?? JSON.stringify(good)) : 'ok';
       return new Response(JSON.stringify({ type: 'message', content: [{ type: 'text', text }], usage: { input_tokens: 1000, output_tokens: 500 }, stop_reason: 'end_turn' }));
     }
+    if (options.failImage?.(address)) return new Response('x', { status: 404 });
     return new Response((options.image ?? JPEG) as unknown as BodyInit);
   }) as unknown as typeof fetch;
   const product = { id: 'prod-1', user_id: U, marketplace: 'shopee', external_id: '1', title: 'Organizador de Bancada Multiuso', price: 29.9, commission: 0.12, sales: 5000, rating: 4.8, images: [IMG], url: 'https://shopee.com.br/produto-i.1.1', collected_at: daysAgo(2) };
@@ -254,5 +255,70 @@ describe('generating a draft', () => {
     const env = await setup({ capCents: 100, usage: [{ id: 'u', user_id: U, purpose: 'x', model: 'm', input_tokens: 0, output_tokens: 0, cost_micros: 1_000_000, created_at: daysAgo(1) }] });
     await expect(run(env)).rejects.toMatchObject({ kind: 'cap' });
     expect(env.claudeBodies).toHaveLength(0); expect(env.tables['posts']).toHaveLength(0);
+  });
+});
+
+
+const photos = (count: number) => Array.from({ length: count }, (_, i) => `${IMG}-${i + 1}`);
+const productWith = (images: string[]) => [{ id: 'prod-1', user_id: U, marketplace: 'shopee', external_id: '1', title: 'Organizador de Bancada Multiuso', price: 29.9, commission: 0.12, sales: 5000, rating: 4.8, images, url: 'https://shopee.com.br/produto-i.1.1', collected_at: daysAgo(2) }];
+const feed = (env: Env, extra: { format?: 'photo' | 'carousel'; schedule?: boolean; link?: string | null } = {}) =>
+  generateAiDraft(env.db as never, { userId: U, masterKey: MASTER, fetcher: env.fetcher, now: () => NOW, ...(extra.format ? { format: extra.format } : {}), ...(extra.schedule ? { schedule: true } : {}), makeLink: async () => (extra.link === undefined ? 'https://shope.ee/abc123' : extra.link) });
+
+describe('generating a Feed post by itself (the manual button)', () => {
+  it('a photo with a link schedules itself a couple of minutes from now', async () => {
+    const env = await setup();
+    const result = await feed(env, { schedule: true });
+    const post = env.tables['posts']?.[0] as Record<string, unknown>; const goesAt = new Date(NOW + 2 * 60_000).toISOString();
+    expect(result).toMatchObject({ postId: post['id'], linkMissing: false, scheduledAt: goesAt });
+    expect(post).toMatchObject({ format: 'photo', status: 'scheduled', scheduled_at: goesAt, source: 'ai', affiliate_link: 'https://shope.ee/abc123' });
+    expect(env.tables['activity_log']?.some(entry => entry['action'] === 'Publicação criada e agendada pela IA')).toBe(true);
+  });
+  it('without a link it never schedules: it waits as a draft', async () => {
+    const env = await setup();
+    const result = await feed(env, { schedule: true, link: null });
+    const post = env.tables['posts']?.[0] as Record<string, unknown>;
+    expect(result).toMatchObject({ linkMissing: true, scheduledAt: null });
+    expect(post).toMatchObject({ status: 'draft', affiliate_link: null }); expect(post['scheduled_at']).toBeUndefined();
+  });
+  it('without asking to schedule, it stays a draft as before', async () => {
+    const env = await setup();
+    expect(await feed(env)).toMatchObject({ scheduledAt: null });
+    expect(env.tables['posts']?.[0]).toMatchObject({ status: 'draft' });
+  });
+  it('a carousel is made of the real photos of the product, in order, and schedules itself', async () => {
+    const env = await setup({ products: productWith(photos(5)) });
+    const result = await feed(env, { format: 'carousel', schedule: true });
+    const post = env.tables['posts']?.[0] as Record<string, unknown>;
+    expect(result.scheduledAt).toBe(new Date(NOW + 2 * 60_000).toISOString());
+    expect(post).toMatchObject({ format: 'carousel', status: 'scheduled', source: 'ai' });
+    expect(env.uploads).toHaveLength(5); expect(env.uploads.every(item => item.contentType === 'image/jpeg')).toBe(true);
+    const assets = env.tables['video_assets'] as Record<string, unknown>[];
+    expect(assets).toHaveLength(5); expect(assets.every(asset => asset['source'] === 'product' && asset['media_type'] === 'image')).toBe(true);
+    const media = env.tables['post_media'] as Record<string, unknown>[];
+    expect(media.map(item => item['position'])).toEqual([0, 1, 2, 3, 4]); expect(media.every(item => item['post_id'] === post['id'])).toBe(true);
+    expect(media[0]?.['asset_id']).toBe(post['video_asset_id']);
+    expect(env.tables['activity_log']?.at(-1)).toMatchObject({ action: 'Publicação criada e agendada pela IA' });
+    expect(String((env.tables['activity_log']?.at(-1) as Record<string, unknown>)['result'])).toContain('Carrossel de 5 fotos');
+  });
+  it('a carousel uses at most ten photos', async () => {
+    const env = await setup({ products: productWith(photos(12)) });
+    await feed(env, { format: 'carousel' });
+    expect(env.uploads).toHaveLength(10); expect(env.tables['post_media']).toHaveLength(10);
+  });
+  it('a carousel only offers products with at least three photos, and does not call the AI when there is none', async () => {
+    const env = await setup({ products: productWith(photos(2)) });
+    await expect(feed(env, { format: 'carousel' })).rejects.toThrow(/pelo menos 3 fotos/);
+    expect(env.claudeBodies).toHaveLength(0); expect(env.tables['posts']).toHaveLength(0);
+  });
+  it('a carousel still works when some photos cannot be downloaded, as long as three remain', async () => {
+    const env = await setup({ products: productWith(photos(5)), failImage: url => url.endsWith('-2') || url.endsWith('-4') });
+    await feed(env, { format: 'carousel' });
+    expect(env.uploads).toHaveLength(3); expect(env.tables['post_media']).toHaveLength(3); expect(env.tables['posts']?.[0]).toMatchObject({ format: 'carousel' });
+  });
+  it('a carousel with fewer than three usable photos is not made, and nothing is left behind', async () => {
+    const env = await setup({ products: productWith(photos(5)), failImage: url => /-(2|3|4)$/.test(url) });
+    await expect(feed(env, { format: 'carousel' })).rejects.toThrow(/fotos suficientes/);
+    expect(env.tables['posts']).toHaveLength(0); expect(env.tables['video_assets']).toHaveLength(0); expect(env.tables['post_media']).toHaveLength(0);
+    expect(env.removed.sort()).toEqual(env.uploads.map(item => item.path).sort());
   });
 });
