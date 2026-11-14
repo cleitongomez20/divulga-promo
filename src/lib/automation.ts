@@ -21,7 +21,8 @@ export const STORY_LOOKBACK_MS = 36 * 3_600_000;
 /** The minimum time between "now" and a time chosen for a post. */
 export const MIN_LEAD_MS = 2 * 60_000;
 
-export const automationSettingsSchema = z.object({ enabled: z.boolean(), mode: z.enum(AUTOMATION_MODES), storyAfterReel: z.boolean() });
+/** storyboardSpeech: whether the AI makes the Reels with a character who speaks (true) or without speech (false). */
+export const automationSettingsSchema = z.object({ enabled: z.boolean(), mode: z.enum(AUTOMATION_MODES), storyAfterReel: z.boolean(), storyboardSpeech: z.boolean().default(true) });
 
 /** What the automation needs from the Configurações screen. */
 export type AutomationSettings = {
