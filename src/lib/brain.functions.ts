@@ -80,3 +80,39 @@ export const generateVideo = createServerFn({ method: 'POST' }).middleware([requ
       } catch (error) { return await explain(error); }
     } catch { return { status: 'error', message: 'Não foi possível pedir o vídeo agora. Tente de novo.' }; }
   });
+
+/** The formats of the "Generate content with AI" button, in the order the screen shows them. */
+export const GENERATE_FORMATS = ['reel', 'story', 'photo', 'carousel'] as const;
+export type GenerateFormat = (typeof GENERATE_FORMATS)[number];
+const GENERATE_LABELS: Record<GenerateFormat, string> = { reel: 'Reels', story: 'Story', photo: 'Publicação no Feed', carousel: 'Carrossel' };
+
+/**
+ * The manual start of the whole process: the user picks a format and clicks once. The AI chooses the product, writes everything and makes the
+ * pictures or the video, and the post schedules itself (the publisher still respects the daily limit, the warm-up and the interval).
+ * Feed and Carrossel are done right away. Reels and Story take a few minutes at Higgsfield and are scheduled the moment the video arrives.
+ * It is the same process the automation uses; the only difference is who starts it.
+ */
+export const generateAiContent = createServerFn({ method: 'POST' }).middleware([requireSupabaseAuth])
+  .inputValidator(input => z.object({ format: z.enum(GENERATE_FORMATS) }).parse(input)).handler(async ({ context, data }): Promise<GenerateResult> => {
+    const userId = context.userId;
+    try {
+      const ready = await prepare(userId, 'ai-content');
+      if ('error' in ready) return { status: 'error', message: ready.error };
+      try {
+        const at = Date.now();
+        if (data.format === 'reel' || data.format === 'story') {
+          const { startVideoDraft } = await import('./video-brain.server');
+          const draft = await startVideoDraft(ready.db, { userId, masterKey: ready.key, format: data.format, makeLink: ready.makeLink, auto: { mode: 'auto', scheduledAt: new Date(at).toISOString(), manual: true } });
+          const link = draft.linkMissing ? ' Sem link de afiliado: o vídeo vai ficar como rascunho. Conecte a Shopee ou tente de novo.' : ' Quando ficar pronto, ele é agendado sozinho.';
+          return {
+            status: 'ok', postId: draft.postId,
+            message: `${GENERATE_LABELS[data.format]} pedido para "${draft.productTitle.slice(0, 60)}": ${draft.duration}s com ${draft.tool}. Custo estimado: ${formatUsd(draft.estimatedMicros)} de vídeo mais ${formatUsd(draft.costMicros)} da IA. O vídeo leva alguns minutos e aparece em Suas publicações.${link}`,
+          };
+        }
+        const { generateAiDraft } = await import('./content-brain.server');
+        const draft = await generateAiDraft(ready.db, { userId, masterKey: ready.key, format: data.format, schedule: true, makeLink: ready.makeLink, now: () => at });
+        const note = draft.scheduledAt ? ' Já está agendado: sai no próximo horário livre.' : ' Sem link de afiliado: ficou como rascunho. Conecte a Shopee ou tente de novo.';
+        return { status: 'ok', postId: draft.postId, message: `${GENERATE_LABELS[data.format]} criado para "${draft.productTitle.slice(0, 70)}". Custo estimado: ${formatUsd(draft.costMicros)}.${note}` };
+      } catch (error) { return await explain(error); }
+    } catch { return { status: 'error', message: 'Não foi possível gerar o conteúdo agora. Tente de novo.' }; }
+  });
