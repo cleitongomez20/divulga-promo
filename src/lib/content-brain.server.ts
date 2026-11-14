@@ -4,8 +4,9 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { askAi } from './ai.server';
 import type { ClaudeMessage } from './claude.server';
 import {
-  AI_FORMATS_NOW, assembleCaption, buildPrompt, feedbackMessage, isShopeeImageUrl, judgeAnswer, pickCandidates, subIdOf, TRIGGER_WORD, type AiOutput, type ProductCandidate,
+  CAROUSEL_MAX_PHOTOS, CAROUSEL_MIN_PHOTOS, assembleCaption, buildPrompt, feedbackMessage, isShopeeImageUrl, judgeAnswer, pickCandidates, subIdOf, TRIGGER_WORD, type AiFeedFormat, type AiOutput, type ProductCandidate,
 } from './content-brain';
+import { MIN_LEAD_MS } from './automation';
 import { MEDIA_BUCKET } from './posts';
 import { encodeSubIds } from './products';
 
@@ -15,7 +16,7 @@ type Fetcher = typeof fetch;
 
 /** An error whose message is already written for the user. */
 export class BrainError extends Error {}
-export type DraftResult = { postId: string; productTitle: string; costMicros: number; linkMissing: boolean };
+export type DraftResult = { postId: string; productTitle: string; costMicros: number; linkMissing: boolean; scheduledAt: string | null };
 
 const str = (value: unknown) => (typeof value === 'string' ? value : '');
 const numOrNull = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) ? value : null);
@@ -59,7 +60,7 @@ export async function loadCandidatePool(db: Db, userId: string, at: number): Pro
     const images = Array.isArray(row['images']) ? (row['images'] as unknown[]) : [];
     const imageUrl = str(images[0]); const url = str(row['url']);
     if (!imageUrl || !url) continue;
-    all.push({ id: str(row['id']), externalId: str(row['external_id']), title: str(row['title']), price: numOrNull(row['price']), commission: numOrNull(row['commission']), sales: numOrNull(row['sales']), rating: numOrNull(row['rating']), imageUrl, url, collectedAt: str(row['collected_at']) });
+    all.push({ id: str(row['id']), externalId: str(row['external_id']), title: str(row['title']), price: numOrNull(row['price']), commission: numOrNull(row['commission']), sales: numOrNull(row['sales']), rating: numOrNull(row['rating']), imageUrl, url, collectedAt: str(row['collected_at']), imageUrls: images.map(str).filter(isShopeeImageUrl) });
   }
   const candidates = pickCandidates(all, { nowMs: at, recentProductIds: recent });
   if (!candidates.length) throw new BrainError(`Não há produtos disponíveis. Busque produtos na tela Produtos: só entram os salvos nos últimos 30 dias, com foto, bem avaliados e que não foram usados nos últimos ${repeatDays} dias.`);
@@ -78,12 +79,19 @@ export async function storeProductPhoto(db: Db, p: { userId: string; fetcher: Fe
 
 export async function generateAiDraft(db: Db, p: {
   userId: string; masterKey: string; fetcher?: Fetcher; now?: () => number;
+  /** "photo" (the default) is one real photo; "carousel" is several real photos of the same product. */
+  format?: AiFeedFormat;
+  /** Schedules the post by itself, a couple of minutes from now, when it has a link. The publisher still respects the daily limit, the warm-up and the interval. */
+  schedule?: boolean;
   /** Turns a Shopee product address into a tracked affiliate link. Returns null when it cannot (the draft is then created without a link). */
   makeLink?: (productUrl: string, subIds: string[]) => Promise<string | null>;
 }): Promise<DraftResult> {
   const fetcher = p.fetcher ?? fetch; const now = p.now ?? Date.now; const at = now();
+  const format: AiFeedFormat = p.format ?? 'photo';
 
-  const { accountId, candidates, repeatDays } = await loadCandidatePool(db, p.userId, at);
+  const { accountId, candidates: allCandidates, repeatDays } = await loadCandidatePool(db, p.userId, at);
+  const candidates = format === 'carousel' ? allCandidates.filter(item => (item.imageUrls?.length ?? 0) >= CAROUSEL_MIN_PHOTOS) : allCandidates;
+  if (!candidates.length) throw new BrainError(`Nenhum produto disponível tem pelo menos ${CAROUSEL_MIN_PHOTOS} fotos para um carrossel. Busque mais produtos na tela Produtos ou escolha outro formato.`);
   // The AI answers, the code checks. One correction round at most, with the problems sent back as feedback.
   const { system, user } = buildPrompt(candidates);
   const ids = new Set(candidates.map(item => item.id));
@@ -103,29 +111,40 @@ export async function generateAiDraft(db: Db, p: {
   }
   const product = candidates.find(item => item.id === output?.chosen_product_id) as ProductCandidate;
 
-  const postId = crypto.randomUUID(); const assetId = crypto.randomUUID();
+  const postId = crypto.randomUUID();
   const subId = subIdOf(postId);
   let affiliateLink: string | null = null;
   try { affiliateLink = (await p.makeLink?.(product.url, encodeSubIds([subId, 'ia']))) ?? null; } catch { affiliateLink = null; }
 
-  const photo = await storeProductPhoto(db, { userId: p.userId, fetcher, imageUrl: product.imageUrl });
-  const path = photo.path;
+  // The real photos of the product: one for a photo post, up to ten for a carousel. A carousel with fewer than three usable photos is not made.
+  const urls = format === 'carousel' ? (product.imageUrls ?? [product.imageUrl]).slice(0, CAROUSEL_MAX_PHOTOS) : [product.imageUrl];
+  const stored: { assetId: string; path: string; bytes: number }[] = [];
   const undo = async () => {
     await db.from('posts').delete().eq('id', postId).eq('user_id', p.userId);
-    await db.from('video_assets').delete().eq('id', assetId).eq('user_id', p.userId);
-    await db.storage.from(MEDIA_BUCKET).remove([path]);
+    for (const item of stored) await db.from('video_assets').delete().eq('id', item.assetId).eq('user_id', p.userId);
+    if (stored.length) await db.storage.from(MEDIA_BUCKET).remove(stored.map(item => item.path));
   };
-  const asset = await db.from('video_assets').insert({ id: assetId, user_id: p.userId, instagram_account_id: accountId, storage_path: path, media_type: 'image', mime_type: 'image/jpeg', size_bytes: photo.bytes, source: 'product' });
-  if (asset.error) { await undo(); throw new BrainError('Não foi possível registrar a foto. Tente de novo.'); }
+  for (const imageUrl of urls) {
+    try { const photo = await storeProductPhoto(db, { userId: p.userId, fetcher, imageUrl }); stored.push({ assetId: crypto.randomUUID(), path: photo.path, bytes: photo.bytes }); }
+    catch (error) { if (format === 'photo') throw error; }
+  }
+  if (format === 'carousel' && stored.length < CAROUSEL_MIN_PHOTOS) { await undo(); throw new BrainError('Não consegui baixar fotos suficientes deste produto para o carrossel. Tente gerar de novo para escolher outro.'); }
+  if (!stored.length) throw new BrainError('Não consegui baixar uma foto utilizável deste produto. Tente gerar de novo para escolher outro.');
+  for (const item of stored) {
+    const asset = await db.from('video_assets').insert({ id: item.assetId, user_id: p.userId, instagram_account_id: accountId, storage_path: item.path, media_type: 'image', mime_type: 'image/jpeg', size_bytes: item.bytes, source: 'product' });
+    if (asset.error) { await undo(); throw new BrainError('Não foi possível registrar a foto. Tente de novo.'); }
+  }
+  // Only a post with a link goes out by itself: without one it waits as a draft, so nothing is published without the way to buy.
+  const goesAt = p.schedule && affiliateLink !== null ? new Date(at + MIN_LEAD_MS).toISOString() : null;
   const post = await db.from('posts').insert({
-    id: postId, user_id: p.userId, instagram_account_id: accountId, product_id: product.id, format: AI_FORMATS_NOW[0], status: 'draft', caption: assembleCaption(output),
-    trigger_word: TRIGGER_WORD, affiliate_link: affiliateLink, sub_id: subId, video_asset_id: assetId, idempotency_key: crypto.randomUUID(), source: 'ai',
+    id: postId, user_id: p.userId, instagram_account_id: accountId, product_id: product.id, format, status: goesAt ? 'scheduled' : 'draft', ...(goesAt ? { scheduled_at: goesAt } : {}), caption: assembleCaption(output),
+    trigger_word: TRIGGER_WORD, affiliate_link: affiliateLink, sub_id: subId, video_asset_id: (stored[0] as { assetId: string }).assetId, idempotency_key: crypto.randomUUID(), source: 'ai',
     ai_plan: { reason: output.reason, angle: output.angle, hook: output.hook, costMicros, linkMissing: affiliateLink === null, generatedAt: new Date(at).toISOString() },
   });
-  if (post.error) { await undo(); throw new BrainError('Não foi possível criar o rascunho. Tente de novo.'); }
-  const media = await db.from('post_media').insert({ user_id: p.userId, post_id: postId, asset_id: assetId, position: 0 });
-  if (media.error) { await undo(); throw new BrainError('Não foi possível ligar a foto ao rascunho. Tente de novo.'); }
+  if (post.error) { await undo(); throw new BrainError('Não foi possível criar a publicação. Tente de novo.'); }
+  const media = await db.from('post_media').insert(stored.map((item, index) => ({ user_id: p.userId, post_id: postId, asset_id: item.assetId, position: index })));
+  if (media.error) { await undo(); throw new BrainError('Não foi possível ligar as fotos à publicação. Tente de novo.'); }
 
-  await db.from('activity_log').insert({ user_id: p.userId, action: 'Rascunho criado pela IA', result: `Foto do produto "${product.title.slice(0, 80)}"`, details: { post_id: postId, product_id: product.id, cost_micros: costMicros, link: affiliateLink !== null } });
-  return { postId, productTitle: product.title, costMicros, linkMissing: affiliateLink === null };
+  await db.from('activity_log').insert({ user_id: p.userId, action: goesAt ? 'Publicação criada e agendada pela IA' : 'Rascunho criado pela IA', result: `${format === 'carousel' ? `Carrossel de ${stored.length} fotos` : 'Foto'} do produto "${product.title.slice(0, 80)}"`, details: { post_id: postId, product_id: product.id, cost_micros: costMicros, link: affiliateLink !== null, ...(goesAt ? { scheduled_at: goesAt } : {}) } });
+  return { postId, productTitle: product.title, costMicros, linkMissing: affiliateLink === null, scheduledAt: goesAt };
 }
