@@ -175,10 +175,18 @@ export async function runAutomation(db: Db, p: { masterKey: string; fetcher?: Fe
   return result;
 }
 
-export type AutomationView = { enabled: boolean; mode: AutomationMode; storyAfterReel: boolean; message: string | null; madeToday: number; targetToday: number; pending: number };
+export type AutomationView = { enabled: boolean; mode: AutomationMode; storyAfterReel: boolean; storyboardSpeech: boolean; message: string | null; madeToday: number; targetToday: number; pending: number };
+
+/** Does the AI make the videos with a speaking character? Read on its own, so a missing column (before the SQL is run) never breaks the rest of the automation. Defaults to yes. */
+export async function storyboardSpeechOf(db: Db, userId: string): Promise<boolean> {
+  const result = await db.from('automation_settings').select('storyboard_speech').eq('user_id', userId).maybeSingle();
+  if (result.error) return true;
+  return ((result.data ?? null) as Row | null)?.['storyboard_speech'] !== false;
+}
 /** What the screen shows: the switches, the status line and today's progress. */
 export async function loadAutomationView(db: Db, userId: string, nowMs: number): Promise<AutomationView> {
   const config = await configOf(db, userId);
+  const storyboardSpeech = await storyboardSpeechOf(db, userId);
   const { automation, publish } = await settingsOf(db, userId);
   const bounds = dayBounds(nowMs, automation.timezone);
   const [today, waiting, account] = await Promise.all([
@@ -190,7 +198,7 @@ export async function loadAutomationView(db: Db, userId: string, nowMs: number):
   const limit = effectiveDailyLimit(publish, typeof accountRow['daily_limit'] === 'number' ? accountRow['daily_limit'] : null, str(accountRow['warmup_started_at']) || null, nowMs);
   const made = ((today.data ?? []) as Row[]).filter(row => !['failed', 'canceled'].includes(str(row['status']))).length;
   return {
-    enabled: config?.enabled ?? false, mode: config?.mode ?? 'approval', storyAfterReel: config?.storyAfterReel ?? true, message: config?.message ?? null,
+    enabled: config?.enabled ?? false, mode: config?.mode ?? 'approval', storyAfterReel: config?.storyAfterReel ?? true, storyboardSpeech, message: config?.message ?? null,
     madeToday: made, targetToday: reelsPerDay(automation.products_per_day, limit, config?.storyAfterReel ?? true), pending: ((waiting.data ?? []) as Row[]).length,
   };
 }
