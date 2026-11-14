@@ -1,21 +1,17 @@
 import { createFileRoute, Link } from '@tanstack/react-router';
 import { useQuery, useQueryClient, useSuspenseQuery } from '@tanstack/react-query';
 import { useServerFn } from '@tanstack/react-start';
-import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { ArrowDown, ArrowUp, Bot, CalendarClock, Clapperboard, LoaderCircle, Pencil, Send, Sparkles, Upload, X } from 'lucide-react';
+import { useState } from 'react';
+import { CalendarClock, LoaderCircle, Pencil, Send, Sparkles } from 'lucide-react';
 import { WorkspaceShell } from '@/components/workspace-shell';
 import { StoryboardPanel } from '@/components/storyboard-panel';
 import { Button } from '@/components/ui/button';
-import { supabase } from '@/integrations/supabase/client';
 import { pageHead } from '@/lib/metadata';
 import { workspaceQuery } from '@/lib/workspace-query';
-import { cancelPost, createManualPost, getPostsOverview, queuePostNow, schedulePostAt, updateDraftCaption, type PostView } from '@/lib/posts.functions';
-import { generateContent, generateVideo } from '@/lib/brain.functions';
-import { getAutomation, planAutomationNow, saveAutomation } from '@/lib/automation.functions';
-import { MODE_LABELS, type AutomationMode } from '@/lib/automation';
+import { cancelPost, getPostsOverview, queuePostNow, schedulePostAt, updateDraftCaption, type PostView } from '@/lib/posts.functions';
+import { GENERATE_FORMATS, generateAiContent, type GenerateFormat } from '@/lib/brain.functions';
 import { HEARTBEAT_STALE_MS } from '@/lib/publishing';
-import { prepareFile, removeUploads, uploadPrepared } from '@/lib/media-upload';
-import { FORMAT_LABELS, FORMAT_RULES, MAX_CAPTION, POST_FORMATS, STATUS_LABELS, CANCELABLE_STATUSES, checkSchedule, formatInZone, validateMedia, zonedTimeToUtcIso, type PostFormat } from '@/lib/posts';
+import { FORMAT_LABELS, STATUS_LABELS, CANCELABLE_STATUSES, checkSchedule, formatInZone, zonedTimeToUtcIso, MAX_CAPTION, type PostFormat } from '@/lib/posts';
 
 export const Route = createFileRoute('/_authenticated/publicacoes')({
   head: () => pageHead('Publicações', 'Crie e acompanhe suas publicações para o Instagram.'),
@@ -23,18 +19,17 @@ export const Route = createFileRoute('/_authenticated/publicacoes')({
   component: PostsPage,
 });
 
-type Picked = { id: string; file: File; previewUrl: string; isImage: boolean };
-const ACCEPT: Record<PostFormat, string> = {
-  reel: 'video/mp4,video/quicktime,.mp4,.mov',
-  story: 'image/*,video/mp4,video/quicktime,.mp4,.mov',
-  photo: 'image/*',
-  carousel: 'image/*,video/mp4,video/quicktime,.mp4,.mov',
-};
 const STATUS_STYLE: Record<string, string> = {
   draft: 'bg-muted text-muted-foreground', rendering: 'bg-accent text-accent-foreground', scheduled: 'bg-accent text-accent-foreground', publishing: 'bg-accent text-accent-foreground',
   published: 'bg-primary text-primary-foreground', failed: 'bg-destructive text-destructive-foreground', canceled: 'bg-muted text-muted-foreground',
 };
-const isImageFile = (file: File) => file.type.startsWith('image/');
+/** The four Instagram formats the manual button can create, with what each one is. */
+const GENERATE_OPTIONS: Record<GenerateFormat, { label: string; hint: string; needsVideo: boolean }> = {
+  reel: { label: 'Reels', hint: 'Um vídeo vertical criado pela IA no Higgsfield. Leva alguns minutos e é agendado sozinho quando ficar pronto.', needsVideo: true },
+  story: { label: 'Story', hint: 'Um vídeo vertical de Story criado pela IA no Higgsfield. Leva alguns minutos e é agendado sozinho quando ficar pronto.', needsVideo: true },
+  photo: { label: 'Feed', hint: 'Uma foto real do produto com a legenda escrita pela IA. Fica pronto na hora e já é agendado.', needsVideo: false },
+  carousel: { label: 'Carrossel', hint: 'De 3 a 10 fotos reais do mesmo produto com a legenda escrita pela IA. Fica pronto na hora e já é agendado.', needsVideo: false },
+};
 
 function PostsPage() {
   const { data: workspace } = useSuspenseQuery(workspaceQuery);
@@ -44,200 +39,89 @@ function PostsPage() {
     queryKey: ['posts'], queryFn: () => getPostsOverview(), staleTime: 0,
     refetchInterval: query => (query.state.data?.posts.some(post => post.status === 'rendering') ? 15_000 : query.state.data?.posts.some(post => post.status === 'scheduled' || post.status === 'publishing') ? 30_000 : false),
   });
-  const create = useServerFn(createManualPost);
   const cancel = useServerFn(cancelPost);
   const queue = useServerFn(queuePostNow);
-  const generate = useServerFn(generateContent);
-  const orderVideoFn = useServerFn(generateVideo);
-  const { data: automation } = useQuery({ queryKey: ['automation'], queryFn: () => getAutomation(), staleTime: 0, refetchInterval: 60_000 });
-  const saveAutomationFn = useServerFn(saveAutomation);
-  const planNowFn = useServerFn(planAutomationNow);
-  const [autoOn, setAutoOn] = useState(false);
-  const [autoMode, setAutoMode] = useState<AutomationMode>('approval');
-  const [autoStory, setAutoStory] = useState(true);
-  // Shows what is saved in the automation options once they arrive.
-  useEffect(() => { if (automation) { setAutoOn(automation.enabled); setAutoMode(automation.mode); setAutoStory(automation.storyAfterReel); } }, [automation?.enabled, automation?.mode, automation?.storyAfterReel]);
+  const generateFn = useServerFn(generateAiContent);
   const saveCaption = useServerFn(updateDraftCaption);
   const schedule = useServerFn(schedulePostAt);
   const [editing, setEditing] = useState<{ id: string; text: string } | null>(null);
   const [scheduling, setScheduling] = useState<{ id: string; when: string } | null>(null);
-
-  const [format, setFormat] = useState<PostFormat>('reel');
-  const [productId, setProductId] = useState('');
-  const [caption, setCaption] = useState('');
-  const [link, setLink] = useState('');
-  const [mode, setMode] = useState<'draft' | 'schedule'>('draft');
-  const [when, setWhen] = useState('');
-  const [files, setFiles] = useState<Picked[]>([]);
+  const [genFormat, setGenFormat] = useState<GenerateFormat>('reel');
   const [busy, setBusy] = useState('');
   const [message, setMessage] = useState('');
-  const [requestId, setRequestId] = useState(() => crypto.randomUUID());
-  const filesRef = useRef<Picked[]>([]);
-  filesRef.current = files;
-  useEffect(() => () => { filesRef.current.forEach(item => URL.revokeObjectURL(item.previewUrl)); }, []);
+  const [listMessage, setListMessage] = useState('');
 
-  const rule = FORMAT_RULES[format];
   const connected = overview?.account?.status === 'connected';
-
-  function changeFormat(next: PostFormat) {
-    setFormat(next); setMessage('');
-    files.forEach(item => URL.revokeObjectURL(item.previewUrl)); setFiles([]);
-  }
-  function addFiles(list: FileList | null) {
-    if (!list?.length) return;
-    setMessage('');
-    const picked = [...list].map(file => ({ id: crypto.randomUUID(), file, previewUrl: URL.createObjectURL(file), isImage: isImageFile(file) }));
-    if (rule.max === 1) { files.forEach(item => URL.revokeObjectURL(item.previewUrl)); setFiles(picked.slice(0, 1)); return; }
-    const room = rule.max - files.length;
-    if (picked.length > room) setMessage(`Cabem no máximo ${rule.max} arquivos. Os que passaram do limite foram ignorados.`);
-    picked.slice(room).forEach(item => URL.revokeObjectURL(item.previewUrl));
-    setFiles([...files, ...picked.slice(0, Math.max(0, room))]);
-  }
-  function removeFile(id: string) {
-    const gone = files.find(item => item.id === id); if (gone) URL.revokeObjectURL(gone.previewUrl);
-    setFiles(files.filter(item => item.id !== id));
-  }
-  function move(index: number, delta: number) {
-    const target = index + delta; if (target < 0 || target >= files.length) return;
-    const next = [...files]; const [item] = next.splice(index, 1); next.splice(target, 0, item as Picked); setFiles(next);
-  }
-  function resetForm() {
-    files.forEach(item => URL.revokeObjectURL(item.previewUrl));
-    setFiles([]); setCaption(''); setLink(''); setWhen(''); setMode('draft'); setRequestId(crypto.randomUUID());
-  }
-
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); setMessage('');
-    if (!productId) { setMessage('Escolha o produto da publicação.'); return; }
-    if (!files.length) { setMessage('Escolha os arquivos da publicação.'); return; }
-    let scheduledAt: string | null = null;
-    if (mode === 'schedule') {
-      scheduledAt = when ? zonedTimeToUtcIso(when, timezone) : null;
-      const problem = scheduledAt ? checkSchedule(scheduledAt) : 'Escolha a data e a hora da publicação.';
-      if (problem) { setMessage(problem); return; }
-    }
-    const uploaded: string[] = [];
-    try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) { setMessage('Entre na sua conta de novo para continuar.'); return; }
-      const prepared = [];
-      for (const [index, item] of files.entries()) {
-        setBusy(`Preparando arquivo ${index + 1} de ${files.length}...`);
-        const result = await prepareFile(item.file);
-        if ('error' in result) { setMessage(result.error); return; }
-        prepared.push(result);
-      }
-      const problem = validateMedia(format, prepared.map(item => item.kind));
-      if (problem) { setMessage(problem); return; }
-      for (const [index, item] of prepared.entries()) {
-        setBusy(`Enviando arquivo ${index + 1} de ${prepared.length}...`);
-        const result = await uploadPrepared(user.id, item);
-        if ('error' in result) { setMessage(result.error); await removeUploads(uploaded); return; }
-        uploaded.push(result.path);
-      }
-      setBusy('Salvando publicação...');
-      const result = await create({ data: { requestId, format, productId, caption, affiliateLink: link, scheduledAt, media: uploaded.map(path => ({ path })) } });
-      if (result.status === 'error') { setMessage(result.message); await removeUploads(uploaded); return; }
-      setMessage(result.message ?? 'Publicação salva.');
-      resetForm();
-      await queryClient.invalidateQueries({ queryKey: ['posts'] });
-    } catch {
-      setMessage('Não foi possível concluir agora. Tente de novo.'); await removeUploads(uploaded);
-    } finally { setBusy(''); }
-  }
 
   async function cancelOne(post: PostView) {
     if (!window.confirm('Cancelar esta publicação?')) return;
-    setBusy('Cancelando...'); setMessage('');
+    setBusy('Cancelando...'); setListMessage('');
     try {
       const result = await cancel({ data: { postId: post.id } });
-      setMessage(result.status === 'ok' ? (result.message ?? 'Publicação cancelada.') : result.message);
+      setListMessage(result.status === 'ok' ? (result.message ?? 'Publicação cancelada.') : result.message);
       await queryClient.invalidateQueries({ queryKey: ['posts'] });
-    } catch { setMessage('Não foi possível cancelar agora. Tente de novo.'); }
+    } catch { setListMessage('Não foi possível cancelar agora. Tente de novo.'); }
     finally { setBusy(''); }
   }
 
   async function sendNow(post: PostView) {
-    setBusy('Colocando na fila...'); setMessage('');
+    setBusy('Colocando na fila...'); setListMessage('');
     try {
       const result = await queue({ data: { postId: post.id } });
-      setMessage(result.status === 'ok' ? (result.message ?? 'Na fila.') : result.message);
+      setListMessage(result.status === 'ok' ? (result.message ?? 'Na fila.') : result.message);
       await queryClient.invalidateQueries({ queryKey: ['posts'] });
-    } catch { setMessage('Não foi possível colocar na fila agora. Tente de novo.'); }
+    } catch { setListMessage('Não foi possível colocar na fila agora. Tente de novo.'); }
     finally { setBusy(''); }
   }
 
-  async function generateOne() {
-    setBusy('A IA está escolhendo o produto e escrevendo (pode levar até 30 segundos)...'); setMessage('');
-    try {
-      const result = await generate();
-      setMessage(result.message);
-      await queryClient.invalidateQueries({ queryKey: ['posts'] });
-    } catch { setMessage('Não foi possível gerar o conteúdo agora. Tente de novo.'); }
-    finally { setBusy(''); }
-  }
-  async function orderVideo(format: 'reel' | 'story') {
-    setBusy('A IA está planejando o vídeo e pedindo ao Higgsfield (pode levar até 1 minuto)...'); setMessage('');
-    try {
-      const result = await orderVideoFn({ data: { format } });
-      setMessage(result.message);
-      await queryClient.invalidateQueries({ queryKey: ['posts'] });
-    } catch { setMessage('Não foi possível pedir o vídeo agora. Tente de novo.'); }
-    finally { setBusy(''); }
-  }
-  async function saveAutomationOptions() {
-    setBusy('Salvando a automação...'); setMessage('');
-    try {
-      const result = await saveAutomationFn({ data: { enabled: autoOn, mode: autoMode, storyAfterReel: autoStory } });
-      setMessage(result.message);
-      await queryClient.invalidateQueries({ queryKey: ['automation'] });
-    } catch { setMessage('Não foi possível salvar a automação agora. Tente de novo.'); }
-    finally { setBusy(''); }
-  }
-  async function planNext() {
-    setBusy('A IA está planejando o próximo Reels e pedindo ao Higgsfield (pode levar até 1 minuto)...'); setMessage('');
-    try {
-      const result = await planNowFn();
-      setMessage(result.message);
-      await Promise.all([queryClient.invalidateQueries({ queryKey: ['posts'] }), queryClient.invalidateQueries({ queryKey: ['automation'] })]);
-    } catch { setMessage('Não foi possível pedir o Reels agora. Tente de novo.'); }
-    finally { setBusy(''); }
-  }
   async function saveEdit() {
     if (!editing) return;
-    setBusy('Salvando legenda...'); setMessage('');
+    setBusy('Salvando legenda...'); setListMessage('');
     try {
       const result = await saveCaption({ data: { postId: editing.id, caption: editing.text } });
-      setMessage(result.status === 'ok' ? (result.message ?? 'Legenda salva.') : result.message);
+      setListMessage(result.status === 'ok' ? (result.message ?? 'Legenda salva.') : result.message);
       if (result.status === 'ok') setEditing(null);
       await queryClient.invalidateQueries({ queryKey: ['posts'] });
-    } catch { setMessage('Não foi possível salvar a legenda agora. Tente de novo.'); }
+    } catch { setListMessage('Não foi possível salvar a legenda agora. Tente de novo.'); }
     finally { setBusy(''); }
   }
   async function confirmSchedule() {
     if (!scheduling) return;
     const at = scheduling.when ? zonedTimeToUtcIso(scheduling.when, timezone) : null;
     const problem = at ? checkSchedule(at) : 'Escolha a data e a hora da publicação.';
-    if (problem || !at) { setMessage(problem ?? 'Escolha a data e a hora da publicação.'); return; }
-    setBusy('Agendando...'); setMessage('');
+    if (problem || !at) { setListMessage(problem ?? 'Escolha a data e a hora da publicação.'); return; }
+    setBusy('Agendando...'); setListMessage('');
     try {
       const result = await schedule({ data: { postId: scheduling.id, scheduledAt: at } });
-      setMessage(result.status === 'ok' ? (result.message ?? 'Publicação agendada.') : result.message);
+      setListMessage(result.status === 'ok' ? (result.message ?? 'Publicação agendada.') : result.message);
       if (result.status === 'ok') setScheduling(null);
       await queryClient.invalidateQueries({ queryKey: ['posts'] });
-    } catch { setMessage('Não foi possível agendar agora. Tente de novo.'); }
+    } catch { setListMessage('Não foi possível agendar agora. Tente de novo.'); }
     finally { setBusy(''); }
   }
 
-  const formBusy = busy.startsWith('A IA está') ? '' : busy;
+  /** The manual start: one click creates the format chosen above, from the product to the scheduled post. */
+  async function generateNow() {
+    setBusy(`A IA está criando ${GENERATE_OPTIONS[genFormat].needsVideo ? 'e pedindo o vídeo ao Higgsfield (pode levar até 1 minuto)' : 'o conteúdo (pode levar até 1 minuto)'}...`); setMessage('');
+    try {
+      const result = await generateFn({ data: { format: genFormat } });
+      setMessage(result.message);
+      await queryClient.invalidateQueries({ queryKey: ['posts'] });
+    } catch { setMessage('Não foi possível gerar o conteúdo agora. Tente de novo.'); }
+    finally { setBusy(''); }
+  }
+
   const waiting = overview?.posts.some(post => post.status === 'scheduled' || post.status === 'rendering') ?? false;
   const lastVisit = overview?.scheduler.lastVisitAt ? Date.parse(overview.scheduler.lastVisitAt) : null;
   const schedulerSilent = waiting && (lastVisit === null || Date.now() - lastVisit > HEARTBEAT_STALE_MS);
+  const option = GENERATE_OPTIONS[genFormat];
+  const generating = busy.startsWith('A IA está');
+  const blocked = !overview?.account || !overview.ai.connected || (option.needsVideo && !overview.ai.videoReady);
 
   return <WorkspaceShell>
     <p className="text-xs font-semibold uppercase tracking-widest text-primary">Instagram</p>
     <h1 className="mt-3 text-3xl font-bold">Publicações</h1>
-    <p className="mt-2 max-w-2xl text-muted-foreground">Envie um vídeo, uma foto ou um carrossel e deixe pronto para publicar. As publicações agendadas saem sozinhas no horário, pelo agendador que visita o app a cada minuto. Respeitamos o limite diário, o aquecimento da conta e o intervalo mínimo entre publicações da tela Configurações, então uma publicação pode sair um pouco depois do horário ou ir para o dia seguinte.</p>
+    <p className="mt-2 max-w-2xl text-muted-foreground">Gere conteúdo com a IA e acompanhe tudo o que foi criado. As publicações agendadas saem sozinhas no horário, pelo agendador que visita o app a cada minuto. Respeitamos o limite diário, o aquecimento da conta e o intervalo mínimo entre publicações da tela Configurações, então uma publicação pode sair um pouco depois do horário ou ir para o dia seguinte.</p>
 
     {overview && !overview.account && <div role="status" className="mt-6 border-l-4 border-primary bg-accent p-4 text-sm font-medium text-accent-foreground">Conecte o seu Instagram na tela <Link to="/conexoes" className="underline">Conexões</Link> para criar publicações.</div>}
     {overview?.account && !connected && <div role="status" className="mt-6 border-l-4 border-primary bg-accent p-4 text-sm font-medium text-accent-foreground">A conexão com o Instagram precisa ser refeita na tela <Link to="/conexoes" className="underline">Conexões</Link>.</div>}
@@ -246,88 +130,29 @@ function PostsPage() {
 
     <section className="mt-8 rounded-lg border bg-card p-5" aria-labelledby="ai-title">
       <div className="flex items-center gap-3"><Sparkles className="size-6 text-primary" /><h2 id="ai-title" className="text-lg font-semibold">Gerar com a IA</h2></div>
-      <p className="mt-2 text-sm text-muted-foreground">A IA escolhe um dos produtos que você já buscou e escreve a legenda. Em foto, cria um rascunho com a foto do produto na hora. Em Reels e Story, pede um vídeo ao Higgsfield, que leva alguns minutos e aparece aqui como rascunho. Você revisa, edita e aprova antes de qualquer coisa ser publicada.</p>
+      <p className="mt-2 text-sm text-muted-foreground">Escolha o formato e clique em gerar. A IA escolhe o produto, escreve a legenda, cria a foto, o carrossel ou o vídeo e agenda sozinha, sem pedir aprovação. O agendamento respeita o limite diário, o aquecimento da conta e o intervalo mínimo entre publicações. Se o personagem fala ou não, você define em <Link to="/configuracoes" className="underline">Configurações</Link>.</p>
       {overview && !overview.ai.connected && <p className="mt-3 text-sm font-medium">Conecte o Claude ou a OpenAI na tela <Link to="/conexoes" className="underline">Conexões</Link> para usar.</p>}
-      <Button type="button" className="mt-4 h-11" disabled={Boolean(busy) || !overview?.ai.connected || !overview?.account} onClick={() => void generateOne()}>{busy.startsWith('A IA está') ? <LoaderCircle className="animate-spin" /> : <Sparkles />}Gerar conteúdo com a IA</Button>
-      <div className="mt-3 flex flex-wrap gap-2">
-        <Button type="button" variant="outline" className="h-11" disabled={Boolean(busy) || !overview?.ai.videoReady || !overview?.account} onClick={() => void orderVideo('reel')}><Clapperboard />Criar Reels com a IA</Button>
-        <Button type="button" variant="outline" className="h-11" disabled={Boolean(busy) || !overview?.ai.videoReady || !overview?.account} onClick={() => void orderVideo('story')}><Clapperboard />Criar Story com a IA</Button>
-      </div>
-      {overview?.ai.connected && !overview.ai.videoReady && <p className="mt-3 text-sm font-medium">Para criar vídeos, conecte o Higgsfield na tela <Link to="/conexoes" className="underline">Conexões</Link>.</p>}
-      {busy.startsWith('A IA está') && <p role="status" className="mt-3 text-sm text-muted-foreground">{busy}</p>}
+      <fieldset className="mt-4"><legend className="form-label">Formato</legend>
+        <div className="flex flex-wrap gap-2">{GENERATE_FORMATS.map(item => <Button key={item} type="button" variant={genFormat === item ? 'default' : 'outline'} className="min-h-11" disabled={generating} aria-pressed={genFormat === item} onClick={() => { setGenFormat(item); setMessage(''); }}>{GENERATE_OPTIONS[item].label}</Button>)}</div>
+        <p className="mt-2 text-xs text-muted-foreground">{option.hint}</p>
+      </fieldset>
+      {overview?.ai.connected && option.needsVideo && !overview.ai.videoReady && <p className="mt-3 text-sm font-medium">Para criar vídeos, conecte o Higgsfield na tela <Link to="/conexoes" className="underline">Conexões</Link>.</p>}
+      <Button type="button" className="mt-4 h-11" disabled={Boolean(busy) || blocked} onClick={() => void generateNow()}>{generating ? <LoaderCircle className="animate-spin" /> : <Sparkles />}Gerar conteúdo com a IA</Button>
+      {generating && <p role="status" className="mt-3 text-sm text-muted-foreground">{busy}</p>}
+      {message && <p role="status" className="mt-3 break-words text-sm font-medium">{message}</p>}
     </section>
 
     <StoryboardPanel />
 
-    <section className="mt-8 rounded-lg border bg-card p-5" aria-labelledby="auto-title">
-      <div className="flex items-center justify-between gap-3"><div className="flex items-center gap-3"><Bot className="size-6 text-primary" /><h2 id="auto-title" className="text-lg font-semibold">Automação</h2></div><span className="rounded-full bg-muted px-3 py-1 text-xs font-medium">{automation?.enabled ? 'Ligada' : 'Desligada'}</span></div>
-      <p className="mt-2 text-sm text-muted-foreground">Todo dia a automação pede os Reels, um de cada vez, espalhados dentro do seu horário de postagem (tela Configurações). Cada Reels vira, algumas horas depois, um Story com o mesmo vídeo. Os tetos de gasto da IA e do Higgsfield, quando existirem, continuam valendo.</p>
-      <div className="mt-4 space-y-4">
-        <label className="flex items-center gap-3 text-sm font-medium"><input type="checkbox" className="size-5" checked={autoOn} disabled={Boolean(busy)} onChange={e => setAutoOn(e.target.checked)} />Ligar a automação</label>
-        <fieldset><legend className="form-label">Modo</legend>
-          <div className="grid gap-2">{(['approval', 'auto'] as const).map(mode => <label key={mode} className="flex items-start gap-3 text-sm"><input type="radio" name="auto-mode" className="mt-1 size-4" checked={autoMode === mode} disabled={Boolean(busy)} onChange={() => setAutoMode(mode)} /><span><span className="font-medium">{MODE_LABELS[mode]}</span>{mode === 'approval' ? ': os vídeos prontos ficam como rascunho até você aprovar. Recomendado no começo.' : ': os vídeos prontos são agendados sozinhos, sem a sua aprovação.'}</span></label>)}</div>
-        </fieldset>
-        <label className="flex items-center gap-3 text-sm"><input type="checkbox" className="size-5" checked={autoStory} disabled={Boolean(busy)} onChange={e => setAutoStory(e.target.checked)} />Postar um Story com o mesmo vídeo algumas horas depois do Reels</label>
-      </div>
-      <div className="mt-4 flex flex-wrap gap-2">
-        <Button type="button" className="h-11" disabled={Boolean(busy)} onClick={() => void saveAutomationOptions()}>Salvar automação</Button>
-        <Button type="button" variant="outline" className="h-11" disabled={Boolean(busy) || !automation?.enabled} onClick={() => void planNext()}><Clapperboard />Criar o próximo Reels agora</Button>
-      </div>
-      {automation?.enabled && <div className="mt-4 text-sm"><p className="font-medium">Hoje: {automation.madeToday} de {automation.targetToday} Reels criados.{automation.pending > 0 ? ` ${automation.pending} esperando você.` : ''}</p>{automation.message && <p className="mt-1 text-muted-foreground">{automation.message}</p>}</div>}
-      <p className="mt-3 text-xs text-muted-foreground">O botão de criar agora ignora o relógio, mas respeita a meta do dia, as falhas e os tetos de gasto. Se a automação encontrar um problema, ela espera 15 minutos antes de tentar de novo, para não gastar à toa.</p>
-    </section>
-
-    <form onSubmit={submit} className="mt-8 rounded-lg border bg-card p-5">
-      <h2 className="text-lg font-semibold">Nova publicação</h2>
-      <fieldset className="mt-5"><legend className="form-label">Formato</legend>
-        <div className="flex flex-wrap gap-2">{POST_FORMATS.map(item => <Button key={item} type="button" variant={format === item ? 'default' : 'outline'} className="min-h-11" onClick={() => changeFormat(item)} aria-pressed={format === item}>{FORMAT_LABELS[item]}</Button>)}</div>
-        <p className="mt-2 text-xs text-muted-foreground">{FORMAT_LABELS[format]}: {rule.hint}. Fotos PNG são convertidas para JPEG automaticamente. Tamanho máximo de 50 MB por arquivo.</p>
-      </fieldset>
-
-      <div className="mt-5"><label className="form-label" htmlFor="product">Produto</label>
-        <select id="product" className="field" value={productId} onChange={e => setProductId(e.target.value)} required>
-          <option value="">{overview?.products.length ? 'Escolha um produto' : 'Nenhum produto salvo ainda'}</option>
-          {overview?.products.map(item => <option key={item.id} value={item.id}>{item.title.slice(0, 90)}</option>)}
-        </select>
-        {overview && !overview.products.length && <p className="mt-2 text-xs text-muted-foreground">Os produtos aparecem aqui depois que você os busca na tela <Link to="/produtos" className="underline">Produtos</Link>.</p>}
-      </div>
-
-      <div className="mt-5"><label className="form-label" htmlFor="files">Arquivos</label>
-        <input id="files" type="file" accept={ACCEPT[format]} multiple={rule.max > 1} onChange={e => { addFiles(e.target.files); e.target.value = ''; }} className="field" />
-        {files.length > 0 && <ul className="mt-3 grid gap-2">{files.map((item, index) => <li key={item.id} className="flex items-center gap-3 rounded-md border p-2">
-          <div className="size-14 shrink-0 overflow-hidden rounded bg-muted">{item.isImage ? <img src={item.previewUrl} alt="" className="size-full object-cover" /> : <video src={item.previewUrl} muted playsInline preload="metadata" className="size-full object-cover" />}</div>
-          <span className="min-w-0 flex-1 truncate text-sm">{rule.max > 1 && <span className="mr-2 font-semibold">{index + 1}.</span>}{item.file.name}</span>
-          {rule.max > 1 && <><Button type="button" size="icon" variant="ghost" title="Subir" aria-label="Subir" disabled={index === 0} onClick={() => move(index, -1)}><ArrowUp /></Button><Button type="button" size="icon" variant="ghost" title="Descer" aria-label="Descer" disabled={index === files.length - 1} onClick={() => move(index, 1)}><ArrowDown /></Button></>}
-          <Button type="button" size="icon" variant="ghost" title="Remover" aria-label="Remover" onClick={() => removeFile(item.id)}><X /></Button>
-        </li>)}</ul>}
-      </div>
-
-      <div className="mt-5"><label className="form-label" htmlFor="caption">Legenda (opcional)</label>
-        <textarea id="caption" className="field min-h-28" value={caption} maxLength={MAX_CAPTION} onChange={e => setCaption(e.target.value)} />
-        <p className="mt-1 text-right text-xs text-muted-foreground">{caption.length}/{MAX_CAPTION}</p>
-      </div>
-
-      <div className="mt-5"><label className="form-label" htmlFor="link">Link de afiliado (opcional)</label>
-        <input id="link" className="field" inputMode="url" placeholder="https://shope.ee/..." value={link} onChange={e => setLink(e.target.value)} maxLength={600} />
-      </div>
-
-      <fieldset className="mt-5"><legend className="form-label">Quando</legend>
-        <div className="flex flex-wrap gap-2"><Button type="button" variant={mode === 'draft' ? 'default' : 'outline'} className="min-h-11" aria-pressed={mode === 'draft'} onClick={() => setMode('draft')}>Salvar como rascunho</Button><Button type="button" variant={mode === 'schedule' ? 'default' : 'outline'} className="min-h-11" aria-pressed={mode === 'schedule'} onClick={() => setMode('schedule')}><CalendarClock />Agendar</Button></div>
-        {mode === 'schedule' && <div className="mt-3 max-w-xs"><input type="datetime-local" className="field" value={when} onChange={e => setWhen(e.target.value)} aria-label="Data e hora" /><p className="mt-1 text-xs text-muted-foreground">No fuso configurado na sua conta.</p></div>}
-      </fieldset>
-
-      {message && <p role="status" className="mt-5 text-sm font-medium">{message}</p>}
-      <Button type="submit" disabled={Boolean(busy) || !connected} className="mt-5 h-11">{formBusy ? <LoaderCircle className="animate-spin" /> : mode === 'schedule' ? <CalendarClock /> : <Upload />}{formBusy || (mode === 'schedule' ? 'Agendar publicação' : 'Salvar rascunho')}</Button>
-    </form>
-
     <h2 className="mt-10 text-lg font-semibold">Suas publicações</h2>
+    {listMessage && <p role="status" className="mt-3 break-words text-sm font-medium">{listMessage}</p>}
     {isLoading && <p role="status" className="mt-4 flex items-center gap-2 text-sm text-muted-foreground"><LoaderCircle className="size-4 animate-spin" />Carregando...</p>}
     {overview && !overview.posts.length && <div className="mt-4 border-y py-12 text-center"><Send className="mx-auto size-10 text-muted-foreground/60" /><h3 className="mt-4 font-semibold">Nenhuma publicação ainda</h3></div>}
     {overview && overview.posts.length > 0 && <ul className="mt-4 grid gap-4">{overview.posts.map(post => <li key={post.id} className="rounded-lg border bg-card p-4">
       <div className="flex flex-wrap items-center gap-2"><span className="text-sm font-semibold">{FORMAT_LABELS[post.format as PostFormat] ?? post.format}</span><span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${STATUS_STYLE[post.status] ?? 'bg-muted text-muted-foreground'}`}>{STATUS_LABELS[post.status] ?? post.status}</span>
         {post.scheduledAt && <span className="text-xs text-muted-foreground">{post.status === 'published' && post.publishedAt ? `Publicada em ${formatInZone(post.publishedAt, timezone)}` : `Para ${formatInZone(post.scheduledAt, timezone)}`}</span>}</div>
       <p className="mt-2 line-clamp-2 text-sm">{post.productTitle}</p>
-      {(post.source === 'ai' || post.source === 'auto') && post.aiPlan && <div className="mt-2 rounded-md bg-accent p-3 text-xs text-accent-foreground"><p className="flex items-center gap-1.5 font-semibold"><Sparkles className="size-3.5" />{post.source === 'auto' ? 'Criado pela automação' : 'Criado pelo Claude'}{post.aiPlan.angle ? `: ${post.aiPlan.angle}` : ''}</p>{post.aiPlan.reason && <p className="mt-1">Por que este produto: {post.aiPlan.reason}</p>}{post.aiPlan.linkMissing && <p className="mt-1 font-medium">Ainda sem link de afiliado. Conecte a Shopee e gere de novo antes de publicar.</p>}</div>}
+      {(post.source === 'ai' || post.source === 'auto') && post.aiPlan && <div className="mt-2 rounded-md bg-accent p-3 text-xs text-accent-foreground"><p className="flex items-center gap-1.5 font-semibold"><Sparkles className="size-3.5" />{post.source === 'auto' ? 'Criado pela automação' : 'Criado pela IA'}{post.aiPlan.angle ? `: ${post.aiPlan.angle}` : ''}</p>{post.aiPlan.reason && <p className="mt-1">Por que este produto: {post.aiPlan.reason}</p>}{post.aiPlan.linkMissing && <p className="mt-1 font-medium">Ainda sem link de afiliado. Conecte a Shopee e gere de novo antes de publicar.</p>}</div>}
       {editing?.id === post.id
         ? <div className="mt-2"><label className="form-label" htmlFor={`caption-${post.id}`}>Legenda</label><textarea id={`caption-${post.id}`} className="field min-h-48" maxLength={MAX_CAPTION} value={editing.text} onChange={e => setEditing({ id: post.id, text: e.target.value })} /><p className="mt-1 text-right text-xs text-muted-foreground">{editing.text.length}/{MAX_CAPTION}</p>
           <div className="mt-2 flex flex-wrap gap-2"><Button type="button" size="sm" className="min-h-11" disabled={Boolean(busy)} onClick={() => void saveEdit()}>Salvar legenda</Button><Button type="button" variant="outline" size="sm" className="min-h-11" disabled={Boolean(busy)} onClick={() => setEditing(null)}>Cancelar</Button></div></div>
