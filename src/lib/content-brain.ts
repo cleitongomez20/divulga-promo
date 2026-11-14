@@ -10,8 +10,12 @@ export const POOL_SIZE = 12;
 /** Prices and availability change: a product collected longer ago than this is not offered to the AI. */
 export const MAX_PRODUCT_AGE_DAYS = 30;
 export const MIN_RATING = 4;
-/** Formats the brain can already finish by itself. Carousel, Story art and Reels need pictures and video made in the next steps. */
-export const AI_FORMATS_NOW = ['photo'] as const;
+/** Feed formats the brain finishes by itself, with the real photos of the product. Reels and Story are made by the video director. */
+export const AI_FORMATS_NOW = ['photo', 'carousel'] as const;
+export type AiFeedFormat = (typeof AI_FORMATS_NOW)[number];
+/** A carousel needs at least this many real photos of the product (Instagram takes 2 to 10). */
+export const CAROUSEL_MIN_PHOTOS = 3;
+export const CAROUSEL_MAX_PHOTOS = 10;
 
 /** Only Shopee image hosts are ever downloaded. */
 export const IMAGE_HOST_SUFFIXES = ['susercontent.com', 'shopee.com.br', 'shopee.com', 'shopeemobile.com'] as const;
@@ -25,6 +29,8 @@ export function isShopeeImageUrl(value: string): boolean {
 export type ProductCandidate = {
   id: string; externalId: string; title: string; price: number | null; commission: number | null; sales: number | null; rating: number | null;
   imageUrl: string; url: string; collectedAt: string;
+  /** Every usable photo of the product (Shopee hosts only), first one included. */
+  imageUrls?: string[];
 };
 
 /** The products the AI may choose from: recent, with a usable photo and link, well rated, not used lately; the best sellers first. */
