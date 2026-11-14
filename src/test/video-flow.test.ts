@@ -206,6 +206,15 @@ describe('ordering a video', () => {
     expect(w.tables['media_usage']?.[0]).toMatchObject({ purpose: 'video', model: 'kling-video/v2.6/pro/image-to-video', cost_micros: 500_000 });
     expect(w.tables['activity_log']?.some(entry => entry['action'] === 'Vídeo pedido ao Higgsfield')).toBe(true);
   });
+  it('the manual button marks the post as made by the AI and ready to schedule itself, while the automation keeps its own mark', async () => {
+    const when = new Date(NOW).toISOString();
+    const manual = await world();
+    await startVideoDraft(manual.db as never, { userId: U, masterKey: MASTER, format: 'reel', fetcher: manual.fetcher, now: () => NOW, auto: { mode: 'auto', scheduledAt: when, manual: true }, makeLink: async () => 'https://shope.ee/abc' });
+    expect(manual.tables['posts']?.[0]).toMatchObject({ source: 'ai', scheduled_at: when, ai_plan: expect.objectContaining({ autoMode: 'auto' }) });
+    const automatic = await world();
+    await startVideoDraft(automatic.db as never, { userId: U, masterKey: MASTER, format: 'reel', fetcher: automatic.fetcher, now: () => NOW, auto: { mode: 'auto', scheduledAt: when }, makeLink: async () => 'https://shope.ee/abc' });
+    expect(automatic.tables['posts']?.[0]).toMatchObject({ source: 'auto', ai_plan: expect.objectContaining({ autoMode: 'auto' }) });
+  });
   it('a Story has no caption and no call to comment', async () => {
     const w = await world({ answers: [answer({ caption: '', hashtags: [] })] });
     await order(w, 'story');
@@ -311,6 +320,19 @@ describe('following the video until it is ready', () => {
     await tick(w);
     expect(row(w)).toMatchObject({ status: 'scheduled', scheduled_at: planned, attempts: 0, video_job: null, error: null });
     expect(w.tables['activity_log']?.some(entry => entry['action'] === 'Vídeo pronto e agendado')).toBe(true);
+  });
+  it('a video from the manual button schedules itself too when it is ready', async () => {
+    const planned = new Date(NOW - 60_000).toISOString();
+    const w = await world({ posts: [rendering({ source: 'ai', scheduled_at: planned, ai_plan: { autoMode: 'auto', linkMissing: false } })] }); w.statusReplies.push({ json: { status: 'completed', video: { url: VIDEO_URL } } });
+    await tick(w);
+    expect(row(w)).toMatchObject({ status: 'scheduled', scheduled_at: new Date(NOW + 2 * 60_000).toISOString() });
+  });
+  it('a finished video without an affiliate link never goes out by itself: it waits as a draft', async () => {
+    for (const source of ['ai', 'auto']) {
+      const w = await world({ posts: [rendering({ source, scheduled_at: new Date(NOW + 30 * 60_000).toISOString(), ai_plan: { autoMode: 'auto', linkMissing: true } })] }); w.statusReplies.push({ json: { status: 'completed', video: { url: VIDEO_URL } } });
+      await tick(w);
+      expect(row(w)).toMatchObject({ status: 'draft', scheduled_at: null });
+    }
   });
   it('if the planned time has already passed, the automatic video goes out in a couple of minutes', async () => {
     const w = await world({ posts: [rendering({ source: 'auto', scheduled_at: new Date(NOW - 60 * 60_000).toISOString(), ai_plan: { autoMode: 'auto' } })] }); w.statusReplies.push({ json: { status: 'completed', video: { url: VIDEO_URL } } });
