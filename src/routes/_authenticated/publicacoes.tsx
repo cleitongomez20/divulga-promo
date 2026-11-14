@@ -4,6 +4,7 @@ import { useServerFn } from '@tanstack/react-start';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { ArrowDown, ArrowUp, Bot, CalendarClock, Clapperboard, LoaderCircle, Pencil, Send, Sparkles, Upload, X } from 'lucide-react';
 import { WorkspaceShell } from '@/components/workspace-shell';
+import { StoryboardPanel } from '@/components/storyboard-panel';
 import { Button } from '@/components/ui/button';
 import { supabase } from '@/integrations/supabase/client';
 import { pageHead } from '@/lib/metadata';
@@ -255,6 +256,8 @@ function PostsPage() {
       {overview?.ai.connected && !overview.ai.videoReady && <p className="mt-3 text-sm font-medium">Para criar vídeos, conecte o Higgsfield na tela <Link to="/conexoes" className="underline">Conexões</Link>.</p>}
       {busy.startsWith('A IA está') && <p role="status" className="mt-3 text-sm text-muted-foreground">{busy}</p>}
     </section>
+
+    <StoryboardPanel />
 
     <section className="mt-8 rounded-lg border bg-card p-5" aria-labelledby="auto-title">
       <div className="flex items-center justify-between gap-3"><div className="flex items-center gap-3"><Bot className="size-6 text-primary" /><h2 id="auto-title" className="text-lg font-semibold">Automação</h2></div><span className="rounded-full bg-muted px-3 py-1 text-xs font-medium">{automation?.enabled ? 'Ligada' : 'Desligada'}</span></div>

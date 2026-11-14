@@ -40,11 +40,12 @@ export const connectOpenAiSchema = z.object({ apiKey: openAiKeySchema, model: mo
 export const openAiSettingsSchema = z.object({ model: modelSchema, monthlyCapUsd: openAiCapSchema });
 export const aiProviderSchema = z.object({ provider: z.enum(['anthropic', 'openai']) });
 
-export type OpenAiErrorKind = 'auth' | 'permission' | 'quota' | 'rate_limit' | 'overloaded' | 'network' | 'timeout' | 'bad_request' | 'server' | 'cap' | 'not_connected';
+export type OpenAiErrorKind = 'auth' | 'permission' | 'quota' | 'rate_limit' | 'overloaded' | 'network' | 'timeout' | 'bad_request' | 'server' | 'cap' | 'not_connected' | 'moderation';
 export function openAiErrorMessage(kind: OpenAiErrorKind, detail = ''): string {
   switch (kind) {
     case 'auth': return 'A OpenAI recusou a chave. Confira se ela foi copiada inteira e se ainda está ativa na plataforma da OpenAI.';
-    case 'permission': return 'Essa chave não tem permissão para usar o modelo escolhido. Confira o acesso do projeto da chave na plataforma da OpenAI.';
+    case 'permission': return 'Essa chave não tem permissão para usar o modelo escolhido. Confira o acesso do projeto da chave e, para gerar imagens, se a verificação da organização na plataforma da OpenAI foi concluída.';
+    case 'moderation': return 'A OpenAI recusou gerar esta imagem pela política de segurança dela. Tente de novo ou escolha outro produto.';
     case 'quota': return 'A conta da OpenAI está sem crédito. Adicione saldo na plataforma da OpenAI e tente de novo.';
     case 'rate_limit': return 'A OpenAI pediu para esperar um pouco. Tente de novo em instantes.';
     case 'overloaded': return 'A OpenAI está sobrecarregada agora. Tente de novo em instantes.';
@@ -59,3 +60,22 @@ export function openAiErrorMessage(kind: OpenAiErrorKind, detail = ''): string {
 
 export const AI_PROVIDER_LABELS = { anthropic: 'Claude', openai: 'OpenAI' } as const;
 export type AiProvider = keyof typeof AI_PROVIDER_LABELS;
+
+/** Image models offered for the storyboard. Both are billed by the same price per token; Flare is the fast one, Sunburst gives more detail. Checked on 2026-11-13. */
+export const OPENAI_IMAGE_MODELS = [
+  { id: 'gpt-image-2.6-flare', label: 'GPT-Image-2.6 Flare: rápido' },
+  { id: 'gpt-image-2.6-sunburst', label: 'GPT-Image-2.6 Sunburst: mais detalhe' },
+] as const;
+export const DEFAULT_IMAGE_MODEL = 'gpt-image-2.6-flare';
+/** Vertical size documented for GPT-Image-2.6. The video step turns it into 9:16. */
+export const IMAGE_SIZE = '1024x1536';
+export const IMAGE_QUALITY = 'medium';
+/** List prices in US dollars per million tokens (so micro-dollars per token): text input, image input and image output. */
+const IMAGE_TEXT_IN = 5; const IMAGE_IMAGE_IN = 8; const IMAGE_OUT = 30;
+/** Estimated cost in micro-dollars of one image call, from the token counts the API reports. When it does not split the input, all of it is priced as image input (the dearer kind). */
+export function estimateOpenAiImageCostMicros(usage: { inputTokens: number; textInputTokens: number | null; imageInputTokens: number | null; outputTokens: number }): number {
+  const split = usage.textInputTokens !== null && usage.imageInputTokens !== null;
+  const text = split ? Math.max(0, usage.textInputTokens ?? 0) : 0;
+  const image = split ? Math.max(0, usage.imageInputTokens ?? 0) : Math.max(0, usage.inputTokens);
+  return Math.ceil(text * IMAGE_TEXT_IN + image * IMAGE_IMAGE_IN + Math.max(0, usage.outputTokens) * IMAGE_OUT);
+}
