@@ -73,8 +73,8 @@ export function StoryboardPanel() {
   const working = Boolean(busy);
 
   return <section className="mt-8 rounded-lg border bg-card p-5" aria-labelledby="storyboard-title">
-    <div className="flex items-center gap-3"><Film className="size-6 text-primary" /><h2 id="storyboard-title" className="text-lg font-semibold">Storyboard com imagens da IA</h2></div>
-    <p className="mt-2 text-sm text-muted-foreground">A IA planeja {SCENE_COUNT} cenas para um Reels de 30 segundos e a OpenAI cria uma imagem por cena, a partir da foto real do produto. Nada é publicado aqui: é só para você conferir. Precisa da OpenAI conectada.</p>
+    <div className="flex items-center gap-3"><Film className="size-6 text-primary" /><h2 id="storyboard-title" className="text-lg font-semibold">Teste: storyboard com imagens da IA</h2></div>
+    <p className="mt-2 text-sm text-muted-foreground">A IA planeja {SCENE_COUNT} cenas para um Reels de 30 segundos e a OpenAI cria uma imagem por cena, a partir da foto real do produto. Nada é publicado aqui: é uma ferramenta de teste para você ver o que a IA cria. No fluxo final, esse processo roda sozinho dentro de Gerar conteúdo com a IA e da automação, sem aprovação, e você recebe o conteúdo pronto. Precisa da OpenAI conectada.</p>
 
     <div className="mt-4 grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
       <div><label className="form-label" htmlFor="sb-product">Produto</label>
