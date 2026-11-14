@@ -108,7 +108,8 @@ export async function advanceVideoJobs(db: Db, p: { masterKey: string; fetcher?:
     // A video made by the automation in automatic mode is scheduled by itself, at its planned time (or in a couple of minutes if that time has passed).
     // Otherwise it waits as a draft for the user's approval, with no time set.
     const plan = row['ai_plan'] && typeof row['ai_plan'] === 'object' ? (row['ai_plan'] as Row) : {};
-    const automatic = row['source'] === 'auto' && plan['autoMode'] === 'auto';
+    // Only a post with an affiliate link goes out by itself: without one it waits as a draft, so nothing is published without the way to buy.
+    const automatic = plan['autoMode'] === 'auto' && plan['linkMissing'] !== true;
     const planned = Date.parse(str(row['scheduled_at']));
     const goesAt = automatic ? new Date(Math.max(Number.isNaN(planned) ? 0 : planned, now() + 2 * 60_000)).toISOString() : null;
     await db.from('posts').update({ status: automatic ? 'scheduled' : 'draft', scheduled_at: goesAt, ...(automatic ? { attempts: 0 } : {}), video_asset_id: assetId, video_job: null, error: null }).eq('id', postId).eq('user_id', userId).eq('status', 'rendering');
