@@ -6,17 +6,27 @@ export type VideoFormat = (typeof VIDEO_FORMATS)[number];
 export const VIDEO_FORMAT_LABELS: Record<VideoFormat, string> = { reel: 'Reels', story: 'Story' };
 
 export const CAMERA_MOVEMENTS = ['dolly_in', 'dolly_out', 'dolly_left', 'dolly_right', 'jib_up', 'jib_down', 'static', 'focus_shift'] as const;
-export type VideoToolId = 'kling_2_6' | 'ltx_2_5';
-export type VideoTool = { id: VideoToolId; endpoint: string; label: string; strengths: string; durations: readonly number[]; estimateUsdPerSecond: number; camera: boolean };
+export type VideoToolId = 'kling_2_6' | 'ltx_2_5' | 'seedance_2_5' | 'wan_3_0' | 'cinema_studio_4';
+/** "frame": one image is the first frame of a short clip. "reference": several images guide one longer video (up to 30 seconds). */
+export type VideoToolMode = 'frame' | 'reference';
+export type VideoTool = { id: VideoToolId; endpoint: string; label: string; strengths: string; durations: readonly number[]; estimateUsdPerSecond: number; camera: boolean; mode: VideoToolMode };
+const range = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => from + i);
 
 /**
  * The tools the AI may choose from. The endpoints and parameters come from the Higgsfield API documentation (image to video, 9:16, MP4 with sound).
  * `estimateUsdPerSecond` is a deliberately cautious budgeting estimate; the real charge is shown in the Higgsfield Console.
  */
 export const VIDEO_TOOLS: Record<VideoToolId, VideoTool> = {
-  kling_2_6: { id: 'kling_2_6', endpoint: 'kling-video/v2.6/pro/image-to-video', label: 'Kling 2.6 Pro', strengths: 'movimento natural e fluido, bom para mostrar o produto em uso; é a opção mais econômica', durations: [5, 10], estimateUsdPerSecond: 0.1, camera: false },
-  ltx_2_5: { id: 'ltx_2_5', endpoint: 'lightricks/ltx-2.5/image-to-video/pro', label: 'LTX 2.5 Pro', strengths: 'controle de câmera (aproximar, afastar, subir, girar) e boa nitidez; custa mais por segundo', durations: [6, 8, 10], estimateUsdPerSecond: 0.17, camera: true },
+  kling_2_6: { id: 'kling_2_6', endpoint: 'kling-video/v2.6/pro/image-to-video', label: 'Kling 2.6 Pro', strengths: 'movimento natural e fluido, bom para mostrar o produto em uso; é a opção mais econômica', durations: [5, 10], estimateUsdPerSecond: 0.1, camera: false, mode: 'frame' },
+  ltx_2_5: { id: 'ltx_2_5', endpoint: 'lightricks/ltx-2.5/image-to-video/pro', label: 'LTX 2.5 Pro', strengths: 'controle de câmera (aproximar, afastar, subir, girar) e boa nitidez; custa mais por segundo', durations: [6, 8, 10], estimateUsdPerSecond: 0.17, camera: true, mode: 'frame' },
+  // The three models below make one longer video from the storyboard images. Their per-second figures are budgeting assumptions, not Higgsfield's price list:
+  // check the real price in the Higgsfield Console and adjust here.
+  seedance_2_5: { id: 'seedance_2_5', endpoint: 'bytedance/seedance-2.5/reference-to-video', label: 'Seedance 2.5', strengths: 'vídeo de até 30 segundos guiado por várias imagens, com áudio e fala sincronizados', durations: range(4, 30), estimateUsdPerSecond: 0.12, camera: false, mode: 'reference' },
+  wan_3_0: { id: 'wan_3_0', endpoint: 'alibaba/wan-3.0/reference-to-video', label: 'Wan 3.0', strengths: 'vídeo de até 30 segundos guiado por até 10 imagens, com diálogo, efeitos e trilha sincronizados', durations: range(2, 30), estimateUsdPerSecond: 0.12, camera: false, mode: 'reference' },
+  cinema_studio_4: { id: 'cinema_studio_4', endpoint: 'higgsfield/cinema-studio/4.0', label: 'Cinema Studio 4.0', strengths: 'vídeo de até 30 segundos com aparência de cinema, guiado por várias imagens, com controle de câmera e áudio', durations: range(4, 30), estimateUsdPerSecond: 0.12, camera: false, mode: 'reference' },
 };
+/** The tools of the original flow, one photo as the first frame. The storyboard flow offers the "reference" tools and LTX instead. */
+export const LEGACY_VIDEO_TOOL_IDS = ['kling_2_6', 'ltx_2_5'] as const;
 export const VIDEO_TOOL_IDS = Object.keys(VIDEO_TOOLS) as [VideoToolId, ...VideoToolId[]];
 export const estimateVideoMicros = (tool: VideoTool, seconds: number) => Math.round(tool.estimateUsdPerSecond * seconds * 1_000_000);
 
@@ -29,7 +39,7 @@ export const VIDEO_UNSENT_MS = 10 * 60_000;
 export const MAX_VIDEO_BYTES = 50 * 1024 * 1024; // the storage limit
 
 export function buildVideoPrompt(format: VideoFormat, candidates: readonly ProductCandidate[]): { system: string; user: string } {
-  const catalog = VIDEO_TOOL_IDS.map(id => {
+  const catalog = LEGACY_VIDEO_TOOL_IDS.map(id => {
     const tool = VIDEO_TOOLS[id];
     return `- ${id} (${tool.label}): ${tool.strengths}. Durações permitidas: ${tool.durations.join(', ')} segundos. Custo estimado: US$ ${tool.estimateUsdPerSecond.toFixed(2)} por segundo.${tool.camera ? ` Aceita movimento de câmera: ${CAMERA_MOVEMENTS.join(', ')}.` : ''}`;
   }).join('\n');
@@ -57,7 +67,7 @@ export function buildVideoPrompt(format: VideoFormat, candidates: readonly Produ
     format === 'reel' ? '- A legenda tem de 3 a 6 linhas curtas; a primeira é o gancho (até 90 caracteres) e a legenda começa com ele.' : '- Story não tem legenda: deixe o campo caption como texto vazio "" e escreva o gancho em hook, só para registro.',
     '',
     'Responda SOMENTE com um objeto JSON válido, sem texto antes ou depois e sem blocos de código, neste formato:',
-    `{"chosen_product_id":"<id exato da lista>","reason":"<por que este produto, em 1 ou 2 frases, só com os dados da lista>","angle":"<o ângulo em poucas palavras>","hook":"<o gancho>","caption":"<a legenda completa ou vazia>","hashtags":["#..."],"tool":"<${VIDEO_TOOL_IDS.join(' ou ')}>","duration":<segundos permitidos para a ferramenta>,"sound":<true ou false>,"camera_movement":<um movimento permitido ou null>,"video_prompt":"<a ordem de filmagem em inglês>"}`,
+    `{"chosen_product_id":"<id exato da lista>","reason":"<por que este produto, em 1 ou 2 frases, só com os dados da lista>","angle":"<o ângulo em poucas palavras>","hook":"<o gancho>","caption":"<a legenda completa ou vazia>","hashtags":["#..."],"tool":"<${LEGACY_VIDEO_TOOL_IDS.join(' ou ')}>","duration":<segundos permitidos para a ferramenta>,"sound":<true ou false>,"camera_movement":<um movimento permitido ou null>,"video_prompt":"<a ordem de filmagem em inglês>"}`,
     format === 'reel' ? 'Use de 5 a 10 hashtags em português, relevantes ao produto.' : 'Em Story, hashtags pode ser uma lista vazia [].',
   ].join('\n');
   const list = candidates.map(item => ({ id: item.id, nome: item.title, preco_reais: item.price, comissao_percentual: item.commission === null ? null : Math.round(item.commission * 1000) / 10, vendas: item.sales, nota: item.rating }));
@@ -71,7 +81,7 @@ export const videoOutputSchema = z.object({
   hook: z.string().trim().min(5).max(140),
   caption: z.string().trim().max(1200).default(''),
   hashtags: z.array(z.string()).max(20).default([]),
-  tool: z.enum(VIDEO_TOOL_IDS),
+  tool: z.enum(LEGACY_VIDEO_TOOL_IDS),
   duration: z.number().int(),
   sound: z.boolean().default(true),
   camera_movement: z.enum(CAMERA_MOVEMENTS).nullable().default(null),
@@ -122,7 +132,13 @@ export function buildHiggsfieldBody(output: VideoOutput, imageUrl: string): Reco
 }
 
 /** What is saved in posts.video_job while the video is being made. */
-export type VideoJob = { requestId: string | null; tool: VideoToolId; endpoint: string; duration: number; framePath: string; estimatedMicros: number; startedAt: number };
+export type VideoJob = {
+  requestId: string | null; tool: VideoToolId; endpoint: string; duration: number; framePath: string; estimatedMicros: number; startedAt: number;
+  /** Storyboard flow only: "storyboard" while the images are being drawn (nothing is ordered yet), then "video" once the order went to Higgsfield. */
+  stage?: 'storyboard' | 'video'; storyboardId?: string; withSpeech?: boolean;
+  /** The post is a carousel made of the storyboard images, with no video. */
+  carousel?: boolean;
+};
 export function parseVideoJob(value: unknown): VideoJob | null {
   if (!value || typeof value !== 'object') return null;
   const job = value as Record<string, unknown>;
@@ -131,5 +147,9 @@ export function parseVideoJob(value: unknown): VideoJob | null {
   return {
     requestId: typeof job['requestId'] === 'string' && job['requestId'] ? job['requestId'] : null, tool: tool as VideoToolId, endpoint, duration: typeof job['duration'] === 'number' ? job['duration'] : 0,
     framePath: typeof job['framePath'] === 'string' ? job['framePath'] : '', estimatedMicros: typeof job['estimatedMicros'] === 'number' ? job['estimatedMicros'] : 0, startedAt: job['startedAt'],
+    ...(job['stage'] === 'storyboard' || job['stage'] === 'video' ? { stage: job['stage'] } : {}),
+    ...(typeof job['storyboardId'] === 'string' && job['storyboardId'] ? { storyboardId: job['storyboardId'] } : {}),
+    ...(typeof job['withSpeech'] === 'boolean' ? { withSpeech: job['withSpeech'] } : {}),
+    ...(job['carousel'] === true ? { carousel: true } : {}),
   };
 }

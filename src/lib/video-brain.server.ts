@@ -2,7 +2,8 @@
 // a video tool from our catalog and writes the plan. The code then orders the video and follows it until it is ready (see video-jobs.server.ts).
 // Nothing is published here: a finished video always lands as a draft for the user to approve.
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { askAi } from './ai.server';
+import { askAi, providerConnected } from './ai.server';
+import { startStoryContent } from './story-video.server';
 import type { ClaudeMessage } from './claude.server';
 import { TRIGGER_WORD, feedbackMessage, subIdOf, type ProductCandidate } from './content-brain';
 import { BrainError, loadCandidatePool, storeProductPhoto } from './content-brain.server';
@@ -28,6 +29,11 @@ export async function startVideoDraft(db: Db, p: {
   auto?: { mode: AutomationMode; scheduledAt: string; manual?: boolean };
 }): Promise<VideoDraftResult> {
   const fetcher = p.fetcher ?? fetch; const now = p.now ?? Date.now; const at = now();
+
+  // With OpenAI connected, the video is made from a storyboard of six images and ordered as one video. Everything happens in the background.
+  if (await providerConnected(db, p.userId, 'openai')) {
+    return startStoryContent(db, { userId: p.userId, masterKey: p.masterKey, format: p.format, fetcher, now, ...(p.makeLink ? { makeLink: p.makeLink } : {}), ...(p.auto ? { auto: p.auto } : {}) });
+  }
 
   // Cheap checks first, before any money is spent: Higgsfield connected and accepted, monthly cap not already used up, few videos in progress.
   await credentialsForJob(db, { userId: p.userId, masterKey: p.masterKey, estimateMicros: 0, now });

@@ -4,6 +4,8 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { hfCall, markInvalid, openStoredCredentials, recordMediaUsage } from './higgsfield.server';
 import { higgsfieldErrorMessage } from './higgsfield';
 import { MEDIA_BUCKET } from './posts';
+import { advanceStoryStage } from './story-video.server';
+import { STORY_VIDEO_STUCK_MS } from './story-video';
 import { MAX_VIDEO_BYTES, VIDEO_STUCK_MS, VIDEO_UNSENT_MS, VIDEO_TOOLS, parseVideoJob, type VideoJob } from './video-brain';
 
 type Db = SupabaseClient;
@@ -28,12 +30,16 @@ export async function advanceVideoJobs(db: Db, p: { masterKey: string; fetcher?:
   const result: VideoJobsResult = { checked: 0, completed: 0, failed: 0, waiting: 0 };
   const { data } = await db.from('posts').select('id,user_id,instagram_account_id,format,video_job,created_at,source,scheduled_at,ai_plan').eq('status', 'rendering').order('created_at', { ascending: true }).limit(10);
 
+  // A storyboard draws images (a slow request each), so only one post at a time is moved forward in a visit.
+  let storyboardsHandled = 0;
   for (const row of (data ?? []) as Row[]) {
     result.checked++;
     const postId = str(row['id']); const userId = str(row['user_id']); const accountId = str(row['instagram_account_id']);
     const job = parseVideoJob(row['video_job']);
     const startedAt = job?.startedAt ?? (Date.parse(str(row['created_at'])) || now());
     const age = now() - startedAt;
+    // A 30-second video from several images takes longer than a short clip.
+    const stuckMs = job?.stage ? STORY_VIDEO_STUCK_MS : VIDEO_STUCK_MS;
     const removeFrame = async (job: VideoJob | null) => { if (job?.framePath) await db.storage.from(MEDIA_BUCKET).remove([job.framePath]); };
     const log = (action: string, text: string, details: Record<string, unknown> = {}) => db.from('activity_log').insert({ user_id: userId, action, result: text, details: { post_id: postId, ...details } });
     /** The video will not come: the post fails, the reserved estimate is returned (Higgsfield does not charge failed or blocked requests) and the first frame is removed. */
@@ -50,22 +56,36 @@ export async function advanceVideoJobs(db: Db, p: { masterKey: string; fetcher?:
     };
 
     if (!job) { await fail('Não foi possível acompanhar este vídeo.', false); continue; }
+    // Waiting for its storyboard: draw the next images, then order the video (or finish the carousel). Nothing is asked of the user.
+    if (job.stage === 'storyboard') {
+      if (storyboardsHandled >= 1) { result.waiting++; continue; }
+      storyboardsHandled++;
+      const outcome = await advanceStoryStage(db, { post: row, job, masterKey: p.masterKey, fetcher, now });
+      if (outcome.kind === 'wait') await wait(outcome.note);
+      else if (outcome.kind === 'fail') await fail(outcome.message, false);
+      else if (outcome.kind === 'ordered') result.waiting++;
+      else {
+        await log(outcome.automatic ? 'Carrossel pronto e agendado' : 'Carrossel pronto', `Carrossel de ${outcome.images} imagens da IA`, { ...(outcome.scheduledAt ? { scheduled_at: outcome.scheduledAt } : {}) });
+        result.completed++;
+      }
+      continue;
+    }
     if (!job.requestId) { if (age > VIDEO_UNSENT_MS) await fail('O pedido do vídeo não chegou ao Higgsfield. Tente de novo.', false); else result.waiting++; continue; }
 
     let credentials;
     try { credentials = await openStoredCredentials(db, { userId, masterKey: p.masterKey }); } catch {
-      if (age > VIDEO_STUCK_MS) await fail('O Higgsfield está desconectado e o vídeo não pôde ser recebido.', true); else await wait(higgsfieldErrorMessage('not_connected'));
+      if (age > stuckMs) await fail('O Higgsfield está desconectado e o vídeo não pôde ser recebido.', true); else await wait(higgsfieldErrorMessage('not_connected'));
       continue;
     }
     let status: { status: number; json: Row | null };
     try { status = await hfCall(fetcher, credentials, { method: 'GET', path: `/requests/${encodeURIComponent(job.requestId)}/status`, timeoutMs: 15_000 }); } catch {
-      if (age > VIDEO_STUCK_MS) await fail('O Higgsfield não respondeu a tempo.', true); else await wait();
+      if (age > stuckMs) await fail('O Higgsfield não respondeu a tempo.', true); else await wait();
       continue;
     }
     if (status.status === 401) { await markInvalid(db, userId); await wait(higgsfieldErrorMessage('auth')); continue; }
     if (status.status === 404) { await fail('O Higgsfield não encontrou este pedido de vídeo.', true); continue; }
     if (status.status !== 200 || !status.json) {
-      if (age > VIDEO_STUCK_MS) await fail('O Higgsfield não respondeu a tempo.', true); else await wait();
+      if (age > stuckMs) await fail('O Higgsfield não respondeu a tempo.', true); else await wait();
       continue;
     }
     const state = str(status.json['status']);
@@ -73,7 +93,7 @@ export async function advanceVideoJobs(db: Db, p: { masterKey: string; fetcher?:
     if (state === 'nsfw') { await fail('O Higgsfield bloqueou este vídeo por conteúdo. Tente de novo com outro produto.', true); continue; }
     if (state === 'canceled') { await fail('O pedido do vídeo foi cancelado.', true); continue; }
     if (state !== 'completed') {
-      if (age > VIDEO_STUCK_MS) {
+      if (age > stuckMs) {
         await hfCall(fetcher, credentials, { method: 'POST', path: `/requests/${encodeURIComponent(job.requestId)}/cancel`, timeoutMs: 10_000 }).catch(() => null);
         await fail('O vídeo demorou demais para ficar pronto.', true);
       } else await wait();
@@ -88,9 +108,9 @@ export async function advanceVideoJobs(db: Db, p: { masterKey: string; fetcher?:
     let bytes: Uint8Array;
     try {
       const res = await fetcher(videoUrl, { signal: AbortSignal.timeout(40_000) });
-      if (!res.ok) { if (age > VIDEO_STUCK_MS) await fail('Não consegui baixar o vídeo pronto.', true); else await wait(); continue; }
+      if (!res.ok) { if (age > stuckMs) await fail('Não consegui baixar o vídeo pronto.', true); else await wait(); continue; }
       bytes = new Uint8Array(await res.arrayBuffer());
-    } catch { if (age > VIDEO_STUCK_MS) await fail('Não consegui baixar o vídeo pronto.', true); else await wait(); continue; }
+    } catch { if (age > stuckMs) await fail('Não consegui baixar o vídeo pronto.', true); else await wait(); continue; }
     if (bytes.length > MAX_VIDEO_BYTES) { await fail('O vídeo gerado passa de 50 MB e não cabe no armazenamento.', true); continue; }
     if (!looksLikeMp4(bytes)) { await fail('O arquivo recebido do Higgsfield não é um vídeo MP4.', true); continue; }
 

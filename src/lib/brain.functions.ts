@@ -109,6 +109,15 @@ export const generateAiContent = createServerFn({ method: 'POST' }).middleware([
             message: `${GENERATE_LABELS[data.format]} pedido para "${draft.productTitle.slice(0, 60)}": ${draft.duration}s com ${draft.tool}. Custo estimado: ${formatUsd(draft.estimatedMicros)} de vídeo mais ${formatUsd(draft.costMicros)} da IA. O vídeo leva alguns minutos e aparece em Suas publicações.${link}`,
           };
         }
+        if (data.format === 'carousel') {
+          // The carousel is made of six images drawn by OpenAI from the real product photo, so it needs OpenAI. It is built in the background and schedules itself.
+          const { providerConnected } = await import('./ai.server');
+          if (!(await providerConnected(ready.db, userId, 'openai'))) return { status: 'error', message: 'O carrossel usa imagens criadas pela OpenAI. Conecte a OpenAI na tela Conexões e confirme que a conexão está funcionando.' };
+          const { startStoryContent } = await import('./story-video.server');
+          const started = await startStoryContent(ready.db, { userId, masterKey: ready.key, format: 'carousel', makeLink: ready.makeLink, auto: { mode: 'auto', scheduledAt: new Date(at).toISOString(), manual: true } });
+          const link = started.linkMissing ? ' Sem link de afiliado: o carrossel vai ficar como rascunho. Conecte a Shopee ou tente de novo.' : ' Quando ficar pronto, ele é agendado sozinho.';
+          return { status: 'ok', postId: started.postId, message: `Carrossel pedido para "${started.productTitle.slice(0, 60)}". Custo estimado do texto: ${formatUsd(started.costMicros)}. A IA está criando as 6 imagens, o que leva alguns minutos, e o conteúdo aparece em Suas publicações.${link}` };
+        }
         const { generateAiDraft } = await import('./content-brain.server');
         const draft = await generateAiDraft(ready.db, { userId, masterKey: ready.key, format: data.format, schedule: true, makeLink: ready.makeLink, now: () => at });
         const note = draft.scheduledAt ? ' Já está agendado: sai no próximo horário livre.' : ' Sem link de afiliado: ficou como rascunho. Conecte a Shopee ou tente de novo.';

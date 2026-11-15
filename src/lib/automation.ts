@@ -6,8 +6,8 @@ export const AUTOMATION_MODES = ['approval', 'auto'] as const;
 export type AutomationMode = (typeof AUTOMATION_MODES)[number];
 export const MODE_LABELS: Record<AutomationMode, string> = { approval: 'Com a minha aprovação', auto: 'Totalmente automático' };
 
-/** A video is ordered this long before the time it is meant to go out, because Higgsfield takes a few minutes. */
-export const ORDER_LEAD_MS = 25 * 60_000;
+/** A Reels is started this long before the time it is meant to go out: the six storyboard images take several minutes and the 30-second video at Higgsfield takes more. A video that is late still goes out in a couple of minutes after it is ready. */
+export const ORDER_LEAD_MS = 60 * 60_000;
 /** No new Reels is ordered this close to the end of the posting window. */
 export const LATE_CUTOFF_MS = 30 * 60_000;
 /** In approval mode, no new video is ordered while this many are waiting for the user. */

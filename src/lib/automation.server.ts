@@ -1,6 +1,7 @@
 // Server-only: the automation. On every visit of the scheduler it decides, for each user who turned it on, whether the next Reels of the day
 // should be ordered now, and whether a published Reels is due for its Story. It spends money only through the guarded paths that already exist
 // (the Claude and Higgsfield monthly caps, the limit of videos at once) and it backs off after an error, so a problem can never burn money every minute.
+import { storyboardSpeechOf } from './ai-options.server';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { aiErrorMessage } from './ai.server';
 import { BrainError } from './content-brain.server';
@@ -176,13 +177,7 @@ export async function runAutomation(db: Db, p: { masterKey: string; fetcher?: Fe
 }
 
 export type AutomationView = { enabled: boolean; mode: AutomationMode; storyAfterReel: boolean; storyboardSpeech: boolean; message: string | null; madeToday: number; targetToday: number; pending: number };
-
-/** Does the AI make the videos with a speaking character? Read on its own, so a missing column (before the SQL is run) never breaks the rest of the automation. Defaults to yes. */
-export async function storyboardSpeechOf(db: Db, userId: string): Promise<boolean> {
-  const result = await db.from('automation_settings').select('storyboard_speech').eq('user_id', userId).maybeSingle();
-  if (result.error) return true;
-  return ((result.data ?? null) as Row | null)?.['storyboard_speech'] !== false;
-}
+export { storyboardSpeechOf };
 /** What the screen shows: the switches, the status line and today's progress. */
 export async function loadAutomationView(db: Db, userId: string, nowMs: number): Promise<AutomationView> {
   const config = await configOf(db, userId);
