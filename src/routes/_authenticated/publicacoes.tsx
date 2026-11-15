@@ -25,10 +25,10 @@ const STATUS_STYLE: Record<string, string> = {
 };
 /** The four Instagram formats the manual button can create, with what each one is. */
 const GENERATE_OPTIONS: Record<GenerateFormat, { label: string; hint: string; needsVideo: boolean }> = {
-  reel: { label: 'Reels', hint: 'Um vídeo vertical criado pela IA no Higgsfield. Leva alguns minutos e é agendado sozinho quando ficar pronto.', needsVideo: true },
-  story: { label: 'Story', hint: 'Um vídeo vertical de Story criado pela IA no Higgsfield. Leva alguns minutos e é agendado sozinho quando ficar pronto.', needsVideo: true },
+  reel: { label: 'Reels', hint: 'A IA cria o storyboard, as 6 imagens e depois o vídeo de 30 segundos no Higgsfield, tudo sozinha. Leva alguns minutos e é agendado quando ficar pronto.', needsVideo: true },
+  story: { label: 'Story', hint: 'A IA cria o storyboard, as imagens e o vídeo vertical de Story no Higgsfield, tudo sozinha. Leva alguns minutos e é agendado quando ficar pronto.', needsVideo: true },
   photo: { label: 'Feed', hint: 'Uma foto real do produto com a legenda escrita pela IA. Fica pronto na hora e já é agendado.', needsVideo: false },
-  carousel: { label: 'Carrossel', hint: 'De 3 a 10 fotos reais do mesmo produto com a legenda escrita pela IA. Fica pronto na hora e já é agendado.', needsVideo: false },
+  carousel: { label: 'Carrossel', hint: '6 imagens criadas pela OpenAI a partir da foto real do produto, com a legenda escrita pela IA. Leva alguns minutos e é agendado quando ficar pronto. Precisa da OpenAI conectada.', needsVideo: false },
 };
 
 function PostsPage() {
