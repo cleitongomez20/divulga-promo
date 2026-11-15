@@ -83,6 +83,8 @@ export async function generateAiDraft(db: Db, p: {
   format?: AiFeedFormat;
   /** Schedules the post by itself, a couple of minutes from now, when it has a link. The publisher still respects the daily limit, the warm-up and the interval. */
   schedule?: boolean;
+  /** How long after now the scheduled post goes out. The default is the minimum lead. */
+  scheduleDelayMs?: number;
   /** Turns a Shopee product address into a tracked affiliate link. Returns null when it cannot (the draft is then created without a link). */
   makeLink?: (productUrl: string, subIds: string[]) => Promise<string | null>;
 }): Promise<DraftResult> {
@@ -135,7 +137,7 @@ export async function generateAiDraft(db: Db, p: {
     if (asset.error) { await undo(); throw new BrainError('Não foi possível registrar a foto. Tente de novo.'); }
   }
   // Only a post with a link goes out by itself: without one it waits as a draft, so nothing is published without the way to buy.
-  const goesAt = p.schedule && affiliateLink !== null ? new Date(at + MIN_LEAD_MS).toISOString() : null;
+  const goesAt = p.schedule && affiliateLink !== null ? new Date(at + (p.scheduleDelayMs ?? MIN_LEAD_MS)).toISOString() : null;
   const post = await db.from('posts').insert({
     id: postId, user_id: p.userId, instagram_account_id: accountId, product_id: product.id, format, status: goesAt ? 'scheduled' : 'draft', ...(goesAt ? { scheduled_at: goesAt } : {}), caption: assembleCaption(output),
     trigger_word: TRIGGER_WORD, affiliate_link: affiliateLink, sub_id: subId, video_asset_id: (stored[0] as { assetId: string }).assetId, idempotency_key: crypto.randomUUID(), source: 'ai',

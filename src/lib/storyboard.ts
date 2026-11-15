@@ -25,11 +25,12 @@ export type StoryboardScenePlan = StoryboardPlan['scenes'][number];
 export type PlanProduct = { title: string };
 
 /** What the AI is told. The code, not the AI, decides what is allowed: everything it answers is checked afterwards. */
-export function buildPlanPrompt(product: PlanProduct, options: { withSpeech: boolean }): { system: string; user: string } {
+export function buildPlanPrompt(product: PlanProduct, options: { withSpeech: boolean; maxSpeechWords?: number }): { system: string; user: string } {
+  const maxWords = options.maxSpeechWords ?? 12;
   const speech = options.withSpeech
     ? [
       'Este Reels tem um personagem que fala. Descreva em "presenter" uma única pessoa fictícia e adulta (aparência, cabelo, roupa), em uma frase, para que ela seja a mesma em todas as cenas.',
-      'Em cada cena, "speech" é o que o personagem diz, com no máximo 12 palavras, em português do Brasil, tom simpático de quem indica algo, como uma amiga.',
+      `Em cada cena, "speech" é o que o personagem diz, em português do Brasil, com no máximo ${maxWords} palavras (a cena é curta, e uma fala longa fica atropelada e ininteligível). Uma frase curta e simples por cena, de palavras comuns, dita devagar e com clareza. Tom simpático de quem indica algo, como uma amiga.`,
       'Permitido na fala: "olha o que eu encontrei", "achei super prático", "olha esse detalhe". Proibido: dizer que comprou, usou, testou ou amou o produto, contar resultado ou depoimento, citar preço, desconto, porcentagem, número de vendas, urgência ou escassez.',
     ]
     : ['Este Reels não tem fala: "presenter" e todos os "speech" devem ser null.'];
@@ -49,10 +50,10 @@ export function buildPlanPrompt(product: PlanProduct, options: { withSpeech: boo
 }
 
 /** Personal use, result or testimonial claims are forbidden in anything the presenter says (the same rule as the captions). */
-const TESTIMONIAL = /\b(comprei|usei|uso\s+(todo|toda|há|faz)|testei|amei|adorei|resolveu\s+(o\s+)?meu|mudou\s+(a\s+)?minha|na\s+minha\s+(casa|rotina))\b/i;
+export const TESTIMONIAL = /\b(comprei|usei|uso\s+(todo|toda|há|faz)|testei|amei|adorei|resolveu\s+(o\s+)?meu|mudou\s+(a\s+)?minha|na\s+minha\s+(casa|rotina))\b/i;
 
 export type PlanVerdict = { ok: true; plan: StoryboardPlan } | { ok: false; problems: string[] };
-export function judgePlan(text: string, options: { withSpeech: boolean }): PlanVerdict {
+export function judgePlan(text: string, options: { withSpeech: boolean; maxSpeechWords?: number }): PlanVerdict {
   const raw = extractJson(text);
   if (raw === null) return { ok: false, problems: ['a resposta não é um JSON válido'] };
   const parsed = planSchema.safeParse(raw);
@@ -62,7 +63,11 @@ export function judgePlan(text: string, options: { withSpeech: boolean }): PlanV
   const plan = parsed.data; const problems: string[] = [];
   if (options.withSpeech) {
     if (!plan.presenter) problems.push('falta descrever o personagem em "presenter"');
-    plan.scenes.forEach((scene, index) => { if (!scene.speech) problems.push(`a cena ${index + 1} está sem fala`); });
+    plan.scenes.forEach((scene, index) => {
+      if (!scene.speech) { problems.push(`a cena ${index + 1} está sem fala`); return; }
+      const words = scene.speech.trim().split(/\s+/).length;
+      if (options.maxSpeechWords !== undefined && words > options.maxSpeechWords) problems.push(`a fala da cena ${index + 1} tem ${words} palavras, e o máximo é ${options.maxSpeechWords}`);
+    });
   } else {
     if (plan.presenter) problems.push('"presenter" deve ser null, porque o vídeo não tem fala');
     plan.scenes.forEach((scene, index) => { if (scene.speech) problems.push(`a cena ${index + 1} tem fala, mas o vídeo não deve ter`); });

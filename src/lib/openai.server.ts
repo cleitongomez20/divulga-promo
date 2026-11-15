@@ -139,9 +139,9 @@ export async function safetyIdentifier(userId: string): Promise<string> { return
  * One call to the Image API. With reference photos it uses the edits endpoint (the model sees the real product); without them, generations.
  * It asks for a JPEG, which is what Instagram takes, and reads the picture from the base64 field of the answer.
  */
-export async function callOpenAiImage(fetcher: Fetcher, p: { apiKey: string; model: string; prompt: string; references: Uint8Array[]; safetyId?: string; timeoutMs?: number }): Promise<OpenAiImageCall> {
+export async function callOpenAiImage(fetcher: Fetcher, p: { apiKey: string; model: string; prompt: string; references: Uint8Array[]; size?: string; safetyId?: string; timeoutMs?: number }): Promise<OpenAiImageCall> {
   const edit = p.references.length > 0;
-  const fields = { model: p.model, prompt: p.prompt, size: IMAGE_SIZE, quality: IMAGE_QUALITY, output_format: 'jpeg', n: 1, ...(p.safetyId ? { safety_identifier: p.safetyId } : {}) };
+  const fields = { model: p.model, prompt: p.prompt, size: p.size ?? IMAGE_SIZE, quality: IMAGE_QUALITY, output_format: 'jpeg', n: 1, ...(p.safetyId ? { safety_identifier: p.safetyId } : {}) };
   let init: RequestInit;
   if (edit) {
     const form = new FormData();
@@ -176,7 +176,7 @@ export async function callOpenAiImage(fetcher: Fetcher, p: { apiKey: string; mod
  * Asks OpenAI for one image, with the same checks as every other call: connected, key accepted, monthly cap (only if the user set one).
  * The tokens and the estimated cost are recorded in the OpenAI usage, like the text calls.
  */
-export async function askOpenAiImage(db: Db, p: { userId: string; masterKey: string; purpose: string; model: string; prompt: string; references: Uint8Array[]; timeoutMs?: number; fetcher?: Fetcher; now?: () => number }): Promise<OpenAiImageReply> {
+export async function askOpenAiImage(db: Db, p: { userId: string; masterKey: string; purpose: string; model: string; prompt: string; references: Uint8Array[]; size?: string; timeoutMs?: number; fetcher?: Fetcher; now?: () => number }): Promise<OpenAiImageReply> {
   const fetcher = p.fetcher ?? fetch; const now = p.now ?? Date.now;
   const connection = await connectionOf(db, p.userId);
   const credentialId = str(connection?.['credential_id']);
@@ -186,7 +186,7 @@ export async function askOpenAiImage(db: Db, p: { userId: string; masterKey: str
   if (cap !== null && (await monthOpenAiSpentMicros(db, p.userId, now())) >= capMicros(cap)) throw new OpenAiError('cap');
   const apiKey = await openKey(db, p.userId, p.masterKey, credentialId);
   try {
-    const call = await callOpenAiImage(fetcher, { apiKey, model: p.model, prompt: p.prompt, references: p.references, safetyId: await safetyIdentifier(p.userId), ...(p.timeoutMs ? { timeoutMs: p.timeoutMs } : {}) });
+    const call = await callOpenAiImage(fetcher, { apiKey, model: p.model, prompt: p.prompt, references: p.references, ...(p.size ? { size: p.size } : {}), safetyId: await safetyIdentifier(p.userId), ...(p.timeoutMs ? { timeoutMs: p.timeoutMs } : {}) });
     const costMicros = estimateOpenAiImageCostMicros(call);
     await recordUsage(db, p.userId, p.purpose, p.model, { text: '', inputTokens: call.inputTokens, outputTokens: call.outputTokens, stopReason: 'completed' }, costMicros, now());
     return { bytes: call.bytes, inputTokens: call.inputTokens, outputTokens: call.outputTokens, costMicros };

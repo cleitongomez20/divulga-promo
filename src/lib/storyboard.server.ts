@@ -9,6 +9,7 @@ import { BrainError, storeProductPhoto } from './content-brain.server';
 import { DEFAULT_IMAGE_MODEL, openAiErrorMessage } from './openai';
 import { OpenAiError, askOpenAiImage } from './openai.server';
 import { MEDIA_BUCKET } from './posts';
+import { CAROUSEL_IMAGE_SIZE, buildCarouselImagePrompt, buildCarouselPlanPrompt, carouselFeedback, judgeCarouselPlan, type CarouselPlan } from './carousel';
 import { SCENE_COUNT, SCENE_STALE_MS, buildPlanPrompt, buildScenePrompt, judgePlan, planFeedback, type StoryboardPlan } from './storyboard';
 
 type Db = SupabaseClient;
@@ -39,7 +40,13 @@ export async function listStoryboardProducts(db: Db, userId: string): Promise<St
 }
 
 /** Plans the storyboard with the active AI, saves the reference photo, and creates the six scenes waiting to be drawn. Spends only text tokens. */
-export async function planStoryboard(db: Db, p: { userId: string; masterKey: string; productId: string; withSpeech: boolean; fetcher?: Fetcher; now?: () => number }): Promise<{ storyboardId: string; costMicros: number }> {
+export async function planStoryboard(db: Db, p: {
+  userId: string; masterKey: string; productId: string; withSpeech: boolean; fetcher?: Fetcher; now?: () => number;
+  /** "carousel": six square slides with the text written on the images. The default is the storyboard of a video. */
+  kind?: 'video' | 'carousel';
+  /** The most words a person can say in one scene, from the length of the video. */
+  maxSpeechWords?: number;
+}): Promise<{ storyboardId: string; costMicros: number }> {
   const fetcher = p.fetcher ?? fetch; const now = p.now ?? Date.now; const at = now();
   if (!(await providerConnected(db, p.userId, 'openai'))) throw new BrainError('Para criar as imagens do storyboard, conecte a OpenAI na tela Conexões e confirme que a conexão está funcionando.');
   const { data: account } = await db.from('instagram_accounts').select('id').eq('user_id', p.userId).order('created_at', { ascending: true }).limit(1).maybeSingle();
@@ -51,18 +58,26 @@ export async function planStoryboard(db: Db, p: { userId: string; masterKey: str
   if (!product || !title || !isShopeeImageUrl(imageUrl)) throw new BrainError('Não encontrei esse produto com foto. Escolha outro na lista.');
 
   // The AI answers, the code checks. One correction round at most, with the problems sent back as feedback.
-  const { system, user } = buildPlanPrompt({ title }, { withSpeech: p.withSpeech });
+  const carousel = p.kind === 'carousel';
+  const { system, user } = carousel ? buildCarouselPlanPrompt({ title }) : buildPlanPrompt({ title }, { withSpeech: p.withSpeech, ...(p.maxSpeechWords !== undefined ? { maxSpeechWords: p.maxSpeechWords } : {}) });
   const messages: ClaudeMessage[] = [{ role: 'user', content: user }];
-  let costMicros = 0; let plan: StoryboardPlan | null = null; let lastProblems: string[] = [];
-  for (let attempt = 0; attempt < 2 && !plan; attempt++) {
-    const reply = await askAi(db, { userId: p.userId, masterKey: p.masterKey, purpose: 'storyboard', system, messages, maxTokens: 2500, timeoutMs: 60_000, fetcher, now });
+  let costMicros = 0; let plan: StoryboardPlan | null = null; let slides: CarouselPlan | null = null; let lastProblems: string[] = [];
+  for (let attempt = 0; attempt < 2 && !plan && !slides; attempt++) {
+    const reply = await askAi(db, { userId: p.userId, masterKey: p.masterKey, purpose: 'storyboard', system, messages, maxTokens: carousel ? 3000 : 2500, timeoutMs: 60_000, fetcher, now });
     costMicros += reply.costMicros;
-    const verdict = judgePlan(reply.text, { withSpeech: p.withSpeech });
-    if (verdict.ok) { plan = verdict.plan; break; }
-    lastProblems = verdict.problems;
-    messages.push({ role: 'assistant', content: reply.text }, { role: 'user', content: planFeedback(verdict.problems) });
+    if (carousel) {
+      const verdict = judgeCarouselPlan(reply.text);
+      if (verdict.ok) { slides = verdict.plan; break; }
+      lastProblems = verdict.problems;
+      messages.push({ role: 'assistant', content: reply.text }, { role: 'user', content: carouselFeedback(verdict.problems) });
+    } else {
+      const verdict = judgePlan(reply.text, { withSpeech: p.withSpeech, ...(p.maxSpeechWords !== undefined ? { maxSpeechWords: p.maxSpeechWords } : {}) });
+      if (verdict.ok) { plan = verdict.plan; break; }
+      lastProblems = verdict.problems;
+      messages.push({ role: 'assistant', content: reply.text }, { role: 'user', content: planFeedback(verdict.problems) });
+    }
   }
-  if (!plan) {
+  if (!plan && !slides) {
     await db.from('activity_log').insert({ user_id: p.userId, action: 'Storyboard recusado pelas regras', result: 'A IA não escreveu dentro das regras', details: { problems: lastProblems } });
     throw new BrainError('A IA não conseguiu montar o storyboard dentro das regras desta vez. Tente de novo.');
   }
@@ -78,14 +93,15 @@ export async function planStoryboard(db: Db, p: { userId: string; masterKey: str
   if (asset.error) { await undo(); throw new BrainError('Não foi possível registrar a foto do produto. Tente de novo.'); }
   const created = await db.from('storyboards').insert({
     id: storyboardId, user_id: p.userId, instagram_account_id: accountId, product_id: p.productId, product_title: title.slice(0, 300), status: 'planned', with_speech: p.withSpeech,
-    concept: plan.concept, presenter: plan.presenter, reference_path: photo.path, plan, image_model: DEFAULT_IMAGE_MODEL, cost_micros: costMicros,
+    concept: (plan ?? slides as CarouselPlan).concept, presenter: plan ? plan.presenter : null, reference_path: photo.path, plan: plan ?? { kind: 'carousel', ...(slides as CarouselPlan) }, image_model: DEFAULT_IMAGE_MODEL, cost_micros: costMicros,
   });
   if (created.error) { await undo(); throw new BrainError('Não foi possível salvar o storyboard. Tente de novo.'); }
-  const scenes = await db.from('storyboard_scenes').insert(plan.scenes.map((scene, index) => ({
-    id: crypto.randomUUID(), user_id: p.userId, storyboard_id: storyboardId, position: index, title: scene.title, shot: scene.shot, motion: scene.motion, speech: scene.speech, on_screen_text: scene.on_screen_text, status: 'pending',
-  })));
+  const rows = plan
+    ? plan.scenes.map((scene, index) => ({ position: index, title: scene.title, shot: scene.shot, motion: scene.motion, speech: scene.speech, on_screen_text: scene.on_screen_text }))
+    : (slides as CarouselPlan).slides.map((slide, index) => ({ position: index, title: slide.title, shot: slide.shot, motion: '', speech: null, on_screen_text: slide.headline }));
+  const scenes = await db.from('storyboard_scenes').insert(rows.map(row => ({ id: crypto.randomUUID(), user_id: p.userId, storyboard_id: storyboardId, ...row, status: 'pending' })));
   if (scenes.error) { await undo(); throw new BrainError('Não foi possível salvar as cenas. Tente de novo.'); }
-  await db.from('activity_log').insert({ user_id: p.userId, action: 'Storyboard planejado', result: `Produto "${title.slice(0, 80)}", ${SCENE_COUNT} cenas${p.withSpeech ? ' com fala' : ' sem fala'}`, details: { storyboard_id: storyboardId, product_id: p.productId, cost_micros: costMicros } });
+  await db.from('activity_log').insert({ user_id: p.userId, action: 'Storyboard planejado', result: `Produto "${title.slice(0, 80)}", ${SCENE_COUNT} ${carousel ? 'slides com texto na imagem' : `cenas${p.withSpeech ? ' com fala' : ' sem fala'}`}`, details: { storyboard_id: storyboardId, product_id: p.productId, cost_micros: costMicros } });
   return { storyboardId, costMicros };
 }
 
@@ -137,12 +153,16 @@ export async function generateScene(db: Db, p: { userId: string; masterKey: stri
       if (bytes) references.push(bytes);
     }
   }
+  const stored = board['plan'] && typeof board['plan'] === 'object' ? (board['plan'] as Row) : {};
+  const slide = stored['kind'] === 'carousel' && Array.isArray(stored['slides']) ? ((stored['slides'] as Row[])[position] ?? null) : null;
   const plan = { concept: str(board['concept']), presenter, scenes: [] } as unknown as StoryboardPlan;
-  const prompt = buildScenePrompt(plan, { title: str(scene['title']), shot: str(scene['shot']), motion: str(scene['motion']), speech: str(scene['speech']) || null, on_screen_text: str(scene['on_screen_text']) || null }, position, { samePersonReference: references.length > 1 });
+  const prompt = slide
+    ? buildCarouselImagePrompt({ theme: str(stored['theme']) }, slide as unknown as CarouselPlan['slides'][number], position)
+    : buildScenePrompt(plan, { title: str(scene['title']), shot: str(scene['shot']), motion: str(scene['motion']), speech: str(scene['speech']) || null, on_screen_text: str(scene['on_screen_text']) || null }, position, { samePersonReference: references.length > 1 });
 
   let image;
   try {
-    image = await askOpenAiImage(db, { userId: p.userId, masterKey: p.masterKey, purpose: 'imagem', model: str(board['image_model']) || DEFAULT_IMAGE_MODEL, prompt, references, ...(p.fetcher ? { fetcher: p.fetcher } : {}), now });
+    image = await askOpenAiImage(db, { userId: p.userId, masterKey: p.masterKey, purpose: 'imagem', model: str(board['image_model']) || DEFAULT_IMAGE_MODEL, prompt, references, ...(slide ? { size: CAROUSEL_IMAGE_SIZE } : {}), ...(p.fetcher ? { fetcher: p.fetcher } : {}), now });
   } catch (error) {
     if (error instanceof OpenAiError) return fail(openAiErrorMessage(error.kind, error.detail));
     return fail('Não foi possível gerar esta imagem agora. Tente de novo.');

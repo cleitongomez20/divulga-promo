@@ -14,7 +14,7 @@ import type { AutomationMode } from './automation';
 import { MEDIA_BUCKET } from './posts';
 import { encodeSubIds } from './products';
 import {
-  MAX_SCENE_TRIES, MAX_SCENES_PER_VISIT, STORYBOARD_STUCK_MS, STORY_TOOL_IDS, buildStoryBody, buildStoryDirectionPrompt, buildStoryVideoPrompt, judgeStoryDirection,
+  MAX_SCENE_TRIES, MAX_SCENES_PER_VISIT, STORYBOARD_STUCK_MS, STORY_TOOL_IDS, buildStoryBody, maxSpeechWords, buildStoryDirectionPrompt, buildStoryVideoPrompt, judgeStoryDirection,
   type StoryToolId,
 } from './story-video';
 import { generateScene, planStoryboard } from './storyboard.server';
@@ -78,7 +78,11 @@ export async function startStoryContent(db: Db, p: {
   // The monthly cap of Higgsfield, if the owner set one, is checked with the real estimate before the images are paid for.
   if (tool) await credentialsForJob(db, { userId: p.userId, masterKey: p.masterKey, estimateMicros: estimatedMicros, now });
 
-  const planned = await planStoryboard(db, { userId: p.userId, masterKey: p.masterKey, productId: product.id, withSpeech, fetcher, now });
+  // The speech of each scene is limited by the length of the video: a longer line is rushed and comes out garbled.
+  const planned = await planStoryboard(db, {
+    userId: p.userId, masterKey: p.masterKey, productId: product.id, withSpeech, fetcher, now, kind: carousel ? 'carousel' : 'video',
+    ...(direction.tool ? { maxSpeechWords: maxSpeechWords(direction.tool, direction.duration) } : {}),
+  });
   aiMicros += planned.costMicros;
 
   const postId = crypto.randomUUID(); const subId = subIdOf(postId);
@@ -186,8 +190,8 @@ export async function advanceStoryStage(db: Db, p: {
   });
   const imageUrls = assetIds.map(id => db.storage.from(MEDIA_BUCKET).getPublicUrl(pathOf.get(id) as string).data.publicUrl);
   try {
-    // The idempotency key is the post: if this step is repeated, Higgsfield returns the same request instead of making (and charging) a second video.
-    const res = await hfCall(fetcher, credentials, { method: 'POST', path: `/${tool.endpoint}`, body: buildStoryBody(toolId, { prompt: videoPrompt, imageUrls, duration: job.duration, withSpeech }), idempotencyKey: postId, timeoutMs: 30_000 });
+    // The idempotency key is the post and the tool: if this step is repeated, Higgsfield returns the same request instead of making (and charging) a second video; another tool gets a new key.
+    const res = await hfCall(fetcher, credentials, { method: 'POST', path: `/${tool.endpoint}`, body: buildStoryBody(toolId, { prompt: videoPrompt, imageUrls, duration: job.duration, withSpeech }), idempotencyKey: `${postId}:${toolId}`, timeoutMs: 30_000 });
     if (res.status === 401) { await markInvalid(db, userId); throw new HiggsfieldError('auth'); }
     const requestId = str(res.json?.['request_id']);
     if (res.status < 200 || res.status >= 300 || !requestId) throw errorForStatus(res.status, str(res.json?.['detail']), res.retryAfter);

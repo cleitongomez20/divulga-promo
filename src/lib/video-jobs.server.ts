@@ -5,7 +5,7 @@ import { hfCall, markInvalid, openStoredCredentials, recordMediaUsage } from './
 import { higgsfieldErrorMessage } from './higgsfield';
 import { MEDIA_BUCKET } from './posts';
 import { advanceStoryStage } from './story-video.server';
-import { STORY_VIDEO_STUCK_MS } from './story-video';
+import { STORY_VIDEO_STUCK_MS, nextFallbackTool } from './story-video';
 import { MAX_VIDEO_BYTES, VIDEO_STUCK_MS, VIDEO_UNSENT_MS, VIDEO_TOOLS, parseVideoJob, type VideoJob } from './video-brain';
 
 type Db = SupabaseClient;
@@ -43,11 +43,11 @@ export async function advanceVideoJobs(db: Db, p: { masterKey: string; fetcher?:
     const removeFrame = async (job: VideoJob | null) => { if (job?.framePath) await db.storage.from(MEDIA_BUCKET).remove([job.framePath]); };
     const log = (action: string, text: string, details: Record<string, unknown> = {}) => db.from('activity_log').insert({ user_id: userId, action, result: text, details: { post_id: postId, ...details } });
     /** The video will not come: the post fails, the reserved estimate is returned (Higgsfield does not charge failed or blocked requests) and the first frame is removed. */
-    const fail = async (message: string, refund: boolean) => {
+    const fail = async (message: string, refund: boolean, details: Record<string, unknown> = {}) => {
       await db.from('posts').update({ status: 'failed', error: message, video_job: null }).eq('id', postId).eq('user_id', userId).eq('status', 'rendering');
       if (refund && job && job.estimatedMicros > 0) await recordMediaUsage(db, userId, { purpose: 'video-estorno', model: job.endpoint, costMicros: -job.estimatedMicros, at: now() });
       await removeFrame(job);
-      await log('Vídeo não foi gerado', message);
+      await log('Vídeo não foi gerado', message, details);
       result.failed++;
     };
     const wait = async (note?: string) => {
@@ -89,8 +89,23 @@ export async function advanceVideoJobs(db: Db, p: { masterKey: string; fetcher?:
       continue;
     }
     const state = str(status.json['status']);
-    if (state === 'failed') { await fail('O Higgsfield não conseguiu gerar o vídeo. Tente de novo.', true); continue; }
-    if (state === 'nsfw') { await fail('O Higgsfield bloqueou este vídeo por conteúdo. Tente de novo com outro produto.', true); continue; }
+    if (state === 'failed' || state === 'nsfw') {
+      // What Higgsfield answered is kept in the history, so the reason can be read later.
+      const answer = JSON.stringify(status.json).slice(0, 700);
+      const label = VIDEO_TOOLS[job.tool].label;
+      // A video that failed is made again with another tool, from the same images, so the images already paid for are not wasted.
+      const next = state === 'failed' && job.stage === 'video' && job.storyboardId && !job.carousel ? nextFallbackTool(job) : null;
+      if (next) {
+        if (job.estimatedMicros > 0) await recordMediaUsage(db, userId, { purpose: 'video-estorno', model: job.endpoint, costMicros: -job.estimatedMicros, at: now() });
+        const retry: VideoJob = { ...job, requestId: null, stage: 'storyboard', tool: next.tool, endpoint: VIDEO_TOOLS[next.tool].endpoint, duration: next.duration, estimatedMicros: 0, startedAt: now(), triedTools: [...(job.triedTools ?? []), job.tool] };
+        await db.from('posts').update({ video_job: retry, error: `O Higgsfield não conseguiu gerar o vídeo com ${label}. Tentando com ${VIDEO_TOOLS[next.tool].label}...` }).eq('id', postId).eq('user_id', userId).eq('status', 'rendering');
+        await log('Vídeo refeito com outra ferramenta', `${label} falhou; tentando com ${VIDEO_TOOLS[next.tool].label}`, { failed_tool: job.tool, next_tool: next.tool, higgsfield_status: answer });
+        result.waiting++;
+        continue;
+      }
+      await fail(state === 'failed' ? `O Higgsfield não conseguiu gerar o vídeo com ${label}. Tente de novo.` : `O Higgsfield bloqueou este vídeo por conteúdo (${label}). Tente de novo com outro produto.`, true, { tool: job.tool, higgsfield_status: answer });
+      continue;
+    }
     if (state === 'canceled') { await fail('O pedido do vídeo foi cancelado.', true); continue; }
     if (state !== 'completed') {
       if (age > stuckMs) {

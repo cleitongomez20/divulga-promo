@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { checkCaption, extractJson, normalizeHashtags, type ProductCandidate } from './content-brain';
-import { VIDEO_TOOLS, type VideoFormat, type VideoToolId } from './video-brain';
+import { SCENE_COUNT } from './storyboard';
+import { VIDEO_TOOLS, type VideoFormat, type VideoJob, type VideoToolId } from './video-brain';
 
 /**
  * The storyboard flow: the AI picks the product and the video tool, the storyboard images are drawn, and then ONE video is ordered at Higgsfield
@@ -13,6 +14,13 @@ export const STORY_SECONDS: Record<VideoFormat, number> = { reel: 30, story: 15 
 export const STORYBOARD_STUCK_MS = 30 * 60_000;
 /** A 30-second video takes longer than a short clip. */
 export const STORY_VIDEO_STUCK_MS = 45 * 60_000;
+/**
+ * How many words the person can say in one scene: a natural pace is about two words a second, and a video model that is asked for more garbles the speech.
+ * With a reference tool each of the six scenes lasts a sixth of the video; the short-clip tool uses only the first scene, which lasts the whole clip.
+ */
+export function maxSpeechWords(tool: StoryToolId, seconds: number): number {
+  return VIDEO_TOOLS[tool].mode === 'reference' ? Math.max(3, Math.floor((seconds / SCENE_COUNT) * 2.2)) : Math.max(4, Math.floor(seconds * 2));
+}
 /** A scene that failed this many times ends the post. */
 export const MAX_SCENE_TRIES = 3;
 /** The first scene is drawn alone (the next ones copy its person), then up to this many at once, so one visit of the scheduler stays short. */
@@ -103,12 +111,12 @@ export function buildStoryVideoPrompt(tool: StoryToolId, p: { scenes: readonly S
     return clip([
       `Vertical advertising shot that starts from the given image. ${first ? `${first.shot}. ${first.motion}.` : ''}`,
       'Keep the product exactly as in the image: same shape, color and labels. Smooth, natural motion. No text, captions, logos or watermarks.',
-      p.withSpeech && first?.speech ? `The presenter says in Brazilian Portuguese, in a natural friendly voice: "${first.speech}"` : 'No speech.',
+      p.withSpeech && first?.speech ? `The presenter says in Brazilian Portuguese, slowly and very clearly, in a natural friendly voice: "${first.speech}"` : 'No speech.',
     ].join(' '), 1500);
   }
   const each = Math.max(1, Math.round(p.seconds / Math.max(1, p.scenes.length)));
   const lines = p.scenes.map((scene, index) => {
-    const speech = p.withSpeech && scene.speech ? ` The presenter says in Brazilian Portuguese, in a natural friendly voice: "${scene.speech}"` : '';
+    const speech = p.withSpeech && scene.speech ? ` The presenter says in Brazilian Portuguese, slowly and very clearly, in a natural friendly voice: "${scene.speech}"` : '';
     return `Scene ${index + 1} (${imageRef(tool, index + 1)}, about ${each} seconds): ${clip(scene.shot, 220)} Camera and motion: ${clip(scene.motion, 140)}.${speech}`;
   });
   return [
@@ -126,4 +134,14 @@ export function buildStoryBody(tool: StoryToolId, p: { prompt: string; imageUrls
   if (tool === 'ltx_2_5') return { ...common, image_url: p.imageUrls[0] };
   // Wan 3.0 takes up to 10 reference images; Seedance 2.5 and Cinema Studio 4.0 take up to 30. The storyboard has 6.
   return { ...common, image_urls: p.imageUrls.slice(0, 10) };
+}
+
+/** When Higgsfield fails to make the video, these tools are tried next, in this order, with the same images (which are already paid for). */
+export const FALLBACK_TOOL_ORDER = ['wan_3_0', 'seedance_2_5', 'cinema_studio_4'] as const satisfies readonly StoryToolId[];
+export function nextFallbackTool(job: Pick<VideoJob, 'tool' | 'duration' | 'triedTools'>): { tool: StoryToolId; duration: number } | null {
+  const skip = new Set<string>([job.tool, ...(job.triedTools ?? [])]);
+  const tool = FALLBACK_TOOL_ORDER.find(id => !skip.has(id));
+  if (!tool) return null;
+  const durations = VIDEO_TOOLS[tool].durations; const min = durations[0] as number; const max = durations[durations.length - 1] as number;
+  return { tool, duration: Math.min(Math.max(job.duration, min), max) };
 }

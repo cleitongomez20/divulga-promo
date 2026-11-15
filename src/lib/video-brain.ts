@@ -136,6 +136,8 @@ export type VideoJob = {
   requestId: string | null; tool: VideoToolId; endpoint: string; duration: number; framePath: string; estimatedMicros: number; startedAt: number;
   /** Storyboard flow only: "storyboard" while the images are being drawn (nothing is ordered yet), then "video" once the order went to Higgsfield. */
   stage?: 'storyboard' | 'video'; storyboardId?: string; withSpeech?: boolean;
+  /** Tools that already failed for this post, so the next try uses another one. */
+  triedTools?: VideoToolId[];
   /** The post is a carousel made of the storyboard images, with no video. */
   carousel?: boolean;
 };
@@ -150,6 +152,7 @@ export function parseVideoJob(value: unknown): VideoJob | null {
     ...(job['stage'] === 'storyboard' || job['stage'] === 'video' ? { stage: job['stage'] } : {}),
     ...(typeof job['storyboardId'] === 'string' && job['storyboardId'] ? { storyboardId: job['storyboardId'] } : {}),
     ...(typeof job['withSpeech'] === 'boolean' ? { withSpeech: job['withSpeech'] } : {}),
+    ...(Array.isArray(job['triedTools']) ? { triedTools: (job['triedTools'] as unknown[]).filter((id): id is VideoToolId => typeof id === 'string' && id in VIDEO_TOOLS) } : {}),
     ...(job['carousel'] === true ? { carousel: true } : {}),
   };
 }
