@@ -322,3 +322,13 @@ describe('generating a Feed post by itself (the manual button)', () => {
     expect(env.removed.sort()).toEqual(env.uploads.map(item => item.path).sort());
   });
 });
+
+describe('the delay of a post scheduled by the manual button', () => {
+  it('a Feed post goes out the number of minutes asked for after the request', async () => {
+    const env = await setup();
+    const result = await generateAiDraft(env.db as never, { userId: U, masterKey: MASTER, fetcher: env.fetcher, now: () => NOW, schedule: true, scheduleDelayMs: 10 * 60_000, makeLink: async () => 'https://shope.ee/abc123' });
+    const goesAt = new Date(NOW + 10 * 60_000).toISOString();
+    expect(result.scheduledAt).toBe(goesAt);
+    expect(env.tables['posts']?.[0]).toMatchObject({ status: 'scheduled', scheduled_at: goesAt });
+  });
+});

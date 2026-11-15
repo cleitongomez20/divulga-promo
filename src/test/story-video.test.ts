@@ -4,7 +4,7 @@ import { OPENAI_IMAGE_EDITS_URL, OPENAI_URL, connectOpenAiKey } from '@/lib/open
 import { switchProvider } from '@/lib/ai.server';
 import { sealJson } from '@/lib/secret-box.server';
 import {
-  STORY_SECONDS, STORY_TOOL_IDS, buildStoryBody, buildStoryDirectionPrompt, buildStoryVideoPrompt, judgeStoryDirection, type StoryScene,
+  STORY_SECONDS, STORY_TOOL_IDS, maxSpeechWords, buildStoryBody, buildStoryDirectionPrompt, buildStoryVideoPrompt, judgeStoryDirection, type StoryScene,
 } from '@/lib/story-video';
 import { startStoryContent } from '@/lib/story-video.server';
 import { startVideoDraft } from '@/lib/video-brain.server';
@@ -114,6 +114,14 @@ const textReply = (text: string) => ({ json: { status: 'completed', output: [{ t
 const planJson = (speech: boolean) => JSON.stringify({
   concept: 'Mostrar o organizador no dia a dia', presenter: speech ? 'Mulher de 30 anos, cabelo castanho preso, camiseta branca' : null,
   scenes: Array.from({ length: SCENE_COUNT }, (_, i) => ({ title: `Cena ${i + 1}`, shot: `Plano mostrando o produto na bancada, cena ${i + 1}`, motion: 'câmera se aproxima devagar', speech: speech ? `Olha esse detalhe ${i + 1}` : null, on_screen_text: null })),
+});
+const carouselPlanJson = () => JSON.stringify({
+  concept: 'Mostrar como o organizador deixa a bancada em ordem', theme: 'cozinha clara e aconchegante, tons de madeira e branco, luz natural',
+  slides: [
+    { title: 'Capa', shot: 'O organizador sobre uma bancada de cozinha clara, em destaque', headline: 'Sua bancada em ordem', subheadline: 'Um jeito prático de organizar', badge: 'Modo organização', callouts: [], cta: null },
+    ...[2, 3, 4, 5].map(n => ({ title: `Detalhe ${n}`, shot: `Detalhe ${n} do organizador com utensílios guardados`, headline: null, subheadline: null, badge: null, callouts: [`Detalhe ${n} do produto`, 'Cabe tudo'], cta: null })),
+    { title: 'Chamada final', shot: 'O organizador completo na bancada com a cozinha ao fundo', headline: 'Quer o seu?', subheadline: null, badge: null, callouts: [], cta: 'Comente EU QUERO' },
+  ],
 });
 const photoBytes = () => { const bytes = new Uint8Array(6000).fill(9); bytes[0] = 0xff; bytes[1] = 0xd8; bytes[2] = 0xff; return bytes; };
 const mp4Bytes = () => { const bytes = new Uint8Array(4000).fill(1); bytes.set([0x66, 0x74, 0x79, 0x70], 4); return bytes; };
@@ -232,7 +240,7 @@ describe('the background steps', () => {
     expect(body).toMatchObject({ duration: 30, aspect_ratio: '9:16', resolution: '720p', generate_audio: true });
     expect((body['image_urls'] as string[])).toHaveLength(6); expect((body['image_urls'] as string[]).every(url => url.startsWith('https://files.test/'))).toBe(true);
     expect(String(body['prompt'])).toContain('Scene 6 (Image 6');
-    expect((order.init.headers as Record<string, string>)['Idempotency-Key'] ?? (order.init.headers as Record<string, string>)['idempotency-key']).toBe(String(post(w)['id']));
+    expect((order.init.headers as Record<string, string>)['Idempotency-Key'] ?? (order.init.headers as Record<string, string>)['idempotency-key']).toBe(`${String(post(w)['id'])}:seedance_2_5`);
     expect(post(w)['video_job']).toMatchObject({ stage: 'video', requestId: 'req-1', tool: 'seedance_2_5', duration: 30 });
     expect(w.tables['media_usage']?.[0]).toMatchObject({ purpose: 'video', cost_micros: 3_600_000 });
     expect(w.r.to(OPENAI_IMAGE_EDITS_URL)).toHaveLength(6);
@@ -252,7 +260,7 @@ describe('the background steps', () => {
     await tick(w); await tick(w); await tick(w); await tick(w);
     expect(post(w)).toMatchObject({ status: 'draft', scheduled_at: null });
   });
-  it('a repeated order is idempotent: it carries the post as its key', async () => {
+  it('a repeated order is idempotent: it carries the post and the tool as its key', async () => {
     const w = await world({ order: () => ({ status: 503, json: { detail: 'busy' } }) });
     await start(w, 'reel');
     await tick(w); await tick(w); await tick(w);
@@ -261,7 +269,7 @@ describe('the background steps', () => {
     await tick(w);
     expect(orders(w).length).toBeGreaterThan(1);
     const keys = new Set(orders(w).map(call => (call.init.headers as Record<string, string>)['Idempotency-Key'] ?? (call.init.headers as Record<string, string>)['idempotency-key']));
-    expect(keys.size).toBe(1); expect([...keys][0]).toBe(String(post(w)['id'])); void first;
+    expect(keys.size).toBe(1); expect([...keys][0]).toBe(`${String(post(w)['id'])}:seedance_2_5`); void first;
   });
   it('a refused order (invalid) fails the post with a reason and reserves nothing', async () => {
     const w = await world({ order: () => ({ status: 422, json: { detail: 'bad field' } }) });
@@ -292,8 +300,67 @@ describe('the background steps', () => {
   });
 });
 
+describe('when the video fails at Higgsfield', () => {
+  const failed = (json: Record<string, unknown> = { status: 'failed' }) => ({ json });
+  const ordered = (w: World) => orders(w).map(call => call.url.replace(`${HF}/`, ''));
+  it('makes it again with another tool from the same images, and keeps what Higgsfield answered', async () => {
+    const w = await world({ status: () => failed({ status: 'failed', detail: 'generation error 17' }) });
+    await start(w, 'reel', { auto: { mode: 'auto', scheduledAt: new Date(NOW).toISOString(), manual: true } });
+    await tick(w); await tick(w); await tick(w);
+    expect(ordered(w)).toEqual(['bytedance/seedance-2.5/reference-to-video']);
+    await tick(w); // Seedance failed
+    expect(post(w)).toMatchObject({ status: 'rendering' });
+    expect(post(w)['video_job']).toMatchObject({ stage: 'storyboard', requestId: null, tool: 'wan_3_0', endpoint: 'alibaba/wan-3.0/reference-to-video', triedTools: ['seedance_2_5'] });
+    expect(String(post(w)['error'])).toMatch(/Seedance 2\.5.*Tentando com Wan 3\.0/);
+    const entry = w.tables['activity_log']?.find(item => item['action'] === 'Vídeo refeito com outra ferramenta') as Record<string, unknown>;
+    expect(entry['details']).toMatchObject({ failed_tool: 'seedance_2_5', next_tool: 'wan_3_0' }); expect(String((entry['details'] as Record<string, unknown>)['higgsfield_status'])).toContain('generation error 17');
+    expect(w.tables['media_usage']?.some(item => item['purpose'] === 'video-estorno' && item['cost_micros'] === -3_600_000)).toBe(true);
+    await tick(w); // the same images are sent to Wan: nothing is drawn again
+    expect(ordered(w)).toEqual(['bytedance/seedance-2.5/reference-to-video', 'alibaba/wan-3.0/reference-to-video']);
+    expect(w.r.to(OPENAI_IMAGE_EDITS_URL)).toHaveLength(6);
+    const keys = orders(w).map(call => (call.init.headers as Record<string, string>)['Idempotency-Key'] ?? (call.init.headers as Record<string, string>)['idempotency-key']);
+    expect(keys).toEqual([`${String(post(w)['id'])}:seedance_2_5`, `${String(post(w)['id'])}:wan_3_0`]);
+  });
+  it('after trying every tool it fails with the reason and the answer kept in the history', async () => {
+    const w = await world({ status: () => failed({ status: 'failed', detail: 'boom' }) });
+    await start(w, 'reel');
+    for (let i = 0; i < 8; i++) await tick(w);
+    expect(ordered(w)).toEqual(['bytedance/seedance-2.5/reference-to-video', 'alibaba/wan-3.0/reference-to-video', 'higgsfield/cinema-studio/4.0']);
+    expect(post(w)).toMatchObject({ status: 'failed' }); expect(String(post(w)['error'])).toMatch(/não conseguiu gerar o vídeo com Cinema Studio 4\.0/);
+    const entry = w.tables['activity_log']?.find(item => item['action'] === 'Vídeo não foi gerado') as Record<string, unknown>;
+    expect(entry['details']).toMatchObject({ tool: 'cinema_studio_4' }); expect(String((entry['details'] as Record<string, unknown>)['higgsfield_status'])).toContain('boom');
+  });
+  it('a video blocked for content is not remade with another tool', async () => {
+    const w = await world({ status: () => failed({ status: 'nsfw' }) });
+    await start(w, 'reel');
+    await tick(w); await tick(w); await tick(w); await tick(w);
+    expect(post(w)).toMatchObject({ status: 'failed' }); expect(String(post(w)['error'])).toMatch(/bloqueou este vídeo por conteúdo \(Seedance 2\.5\)/);
+    expect(orders(w)).toHaveLength(1);
+  });
+});
+
+describe('the speech of each scene follows the length of the video', () => {
+  it('allows about two words a second, spread over the six scenes', () => {
+    expect(maxSpeechWords('seedance_2_5', 30)).toBe(11); expect(maxSpeechWords('wan_3_0', 15)).toBe(5); expect(maxSpeechWords('cinema_studio_4', 6)).toBe(3);
+    expect(maxSpeechWords('ltx_2_5', 10)).toBe(20);
+  });
+  it('tells the AI the limit for this video, and sends it back when a line is too long', async () => {
+    const long = JSON.parse(planJson(true)) as { scenes: { speech: string }[] };
+    long.scenes[2]!.speech = 'Olha esse detalhe incrível que organiza tudo na sua bancada';
+    const w = await world({ texts: [direction({ tool: 'wan_3_0', duration: 15 }), JSON.stringify(long), planJson(true)] });
+    await start(w, 'story');
+    const body = JSON.parse(String(w.r.to(OPENAI_URL)[1]?.init.body)) as { instructions: string };
+    expect(body.instructions).toContain('no máximo 5 palavras');
+    const retry = JSON.parse(String(w.r.to(OPENAI_URL)[2]?.init.body)) as { input: { content: string }[] };
+    expect(retry.input.at(-1)?.content).toMatch(/a fala da cena 3 tem 10 palavras, e o máximo é 5/);
+  });
+  it('the video prompt asks for slow and clear speech', () => {
+    expect(buildStoryVideoPrompt('wan_3_0', { scenes: sceneList(true), presenter: 'Pessoa', seconds: 15, withSpeech: true })).toContain('slowly and very clearly');
+  });
+});
+
 describe('a carousel from the storyboard images', () => {
-  const carouselTexts = () => [JSON.stringify({ chosen_product_id: 'prod-1', reason: 'Boa nota e muitas vendas, combina com o tema', angle: 'organização', hook: 'Olha o que eu encontrei para a sua bancada', caption: 'Achei um jeitinho de deixar a bancada organizada.\nCabe tudo e ainda fica bonito, olha esse detalhe.', hashtags: ['#organizacao', '#casa', '#bancada', '#achadinhos'] }), planJson(false)];
+  const carouselTexts = () => [JSON.stringify({ chosen_product_id: 'prod-1', reason: 'Boa nota e muitas vendas, combina com o tema', angle: 'organização', hook: 'Olha o que eu encontrei para a sua bancada', caption: 'Achei um jeitinho de deixar a bancada organizada.\nCabe tudo e ainda fica bonito, olha esse detalhe.', hashtags: ['#organizacao', '#casa', '#bancada', '#achadinhos'] }), carouselPlanJson()];
   it('is made of the six images, without a video and without a person, and schedules itself', async () => {
     const w = await world({ texts: carouselTexts() });
     const result = await start(w, 'carousel', { auto: { mode: 'auto', scheduledAt: new Date(NOW).toISOString(), manual: true } });
@@ -308,6 +375,21 @@ describe('a carousel from the storyboard images', () => {
     expect(media.map(item => item['position'])).toEqual([0, 1, 2, 3, 4, 5]); expect(media[0]?.['asset_id']).toBe(post(w)['video_asset_id']);
     expect(w.tables['video_assets']?.filter(asset => asset['source'] === 'ai_image')).toHaveLength(6);
     expect(w.tables['activity_log']?.some(entry => entry['action'] === 'Carrossel pronto e agendado')).toBe(true);
+  });
+  it('draws square slides with the text of each slide written word for word in the prompt', async () => {
+    const w = await world({ texts: carouselTexts() });
+    await start(w, 'carousel');
+    await tick(w); await tick(w); await tick(w);
+    const forms = w.r.to(OPENAI_IMAGE_EDITS_URL).map(call => call.init.body as FormData);
+    expect(forms).toHaveLength(6);
+    expect(forms.every(form => form.get('size') === '1024x1024')).toBe(true);
+    expect(forms.every(form => form.getAll('image[]').length === 1)).toBe(true); // only the product photo: no person to copy
+    const prompts = forms.map(form => String(form.get('prompt')));
+    expect(prompts[0]).toContain('"Sua bancada em ordem"'); expect(prompts[0]).toContain('"Um jeito prático de organizar"'); expect(prompts[0]).toContain('"Modo organização"');
+    expect(prompts[1]).toContain('"Detalhe 2 do produto"'); expect(prompts[1]).toContain('seta fina e curva');
+    expect(prompts[5]).toContain('"Comente EU QUERO"'); expect(prompts[5]).toContain('slide 6 de 6');
+    expect(w.tables['storyboards']?.[0]).toMatchObject({ presenter: null, with_speech: false, plan: expect.objectContaining({ kind: 'carousel' }) });
+    expect((w.tables['storyboard_scenes'] as Record<string, unknown>[])[0]).toMatchObject({ on_screen_text: 'Sua bancada em ordem', speech: null });
   });
   it('does not need Higgsfield', async () => {
     const w = await world({ texts: carouselTexts(), hfConnected: false });
