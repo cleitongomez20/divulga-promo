@@ -18,8 +18,9 @@ Mulheres donas de casa, iniciantes ou intermediárias, sem tempo para pesquisar 
 A3. Fases
 • Fase 1 (agora): uso próprio, um único usuário (o dono), com o banco já preparado para vários usuários.
 • Fase 2: cadastro de clientes, cobrança e acesso pela Hotmart, onboarding guiado, planos e limites, verificação do app na Meta.
-• Fase 3: premium (mais contas de Instagram, clipes por IA, narração, música), Kiwify, Braip, Cakto, Amazon e Mercado Livre, Facebook.
-Na Fase 1 NÃO construa: cadastro público, cobrança, Facebook, música, narração, outros marketplaces.
+• Fase 3: premium (mais contas de Instagram, música), Kiwify, Braip, Cakto, Amazon e Mercado Livre, Facebook.
+Na Fase 1 NÃO construa: cadastro público, cobrança, Facebook, música, outros marketplaces.
+Decisão do dono em 12/11/2026: a OpenAI substitui o Claude como cérebro de toda a criação (o Claude só sai depois de a OpenAI estar pronta e rodando); imagens publicitárias geradas por IA, clipes por IA e fala de personagem passam a fazer parte da Fase 1; o Higgsfield cria os vídeos de 30 segundos e a IA escolhe o modelo de vídeo; não há teto de gasto imposto, mas a configuração de teto continua existindo e vazia significa sem limite.
 A4. Stack e arquitetura
 • Front: React + TypeScript + Tailwind + shadcn/ui, gráficos com Recharts.
 • Backend: Supabase próprio (Postgres, Auth, Storage, Edge Functions, pg_cron). Toda chamada à Shopee, à Meta, ao serviço de render e à IA de texto acontece em Edge Functions, nunca no navegador.
@@ -61,9 +62,10 @@ Valores padrão sugeridos, todos configuráveis:
 • Modo manual: o sistema entrega o pacote pronto (vídeo, legenda, link, palavra-gatilho) para a usuária baixar, copiar e postar pelo app, com um aviso de que ela pode escolher uma música em alta na hora.
 • Modo automático: o mesmo fluxo, agendado e publicado sem intervenção, respeitando todas as regras acima.
 A7. Regras de conteúdo
-• Vídeo: vertical 9:16, de 15 a 30 segundos, somente imagens e textos (sem narração e sem música na Fase 1). Estrutura: gancho (0 a 3 s), demonstração com 3 a 5 imagens e textos curtos de benefício, chamada final (“comente EU QUERO” e/ou “link na bio”). Fonte grande, contraste alto, texto dentro da área segura do Reels.
+• Vídeo: vertical 9:16, de 15 a 30 segundos, com imagens e textos; o formato padrão é POV: a câmera é a primeira pessoa e aparecem só as mãos de uma pessoa, sem rosto e sem fala (um personagem que fala é uma opção experimental em Configurações); sem música na Fase 1. Estrutura: gancho (0 a 3 s), demonstração com 3 a 5 imagens e textos curtos de benefício, chamada final, sempre “Comenta EU QUERO” (nunca “link na bio”). O storyboard conta uma história de uso do produto em 6 cenas (apresentar, desembalar ou preparar, aplicar, uso em detalhe, resultado, chamada final), cada uma com ação e ângulo de câmera diferentes. O carrossel é sobre um só produto, em 6 slides quadrados com os textos escritos na imagem: gancho de curiosidade, benefícios, continuação da história, uso, resultado e chamada final. Fonte grande, contraste alto, texto dentro da área segura do Reels.
 • Mínimo de imagens: produtos com menos de 3 imagens de boa qualidade são descartados pelo filtro.
-• Fonte do vídeo: apenas imagens e dados do produto vindos da API. A interface de mídia deve ser genérica (imagens do produto, vídeo enviado pelo usuário no futuro), sem baixar vídeos de terceiros.
+• Fonte do vídeo: imagens e dados do produto vindos da API; a IA pode gerar imagens publicitárias a partir das fotos reais do produto, sem mudar o produto mostrado. A interface de mídia deve ser genérica (imagens do produto, vídeo enviado pelo usuário no futuro), sem baixar vídeos de terceiros.
+• Fala do personagem: segue as mesmas proibições de uso pessoal, resultado e depoimento da regra de legendas e textos abaixo.
 • Legendas e textos: gerados por IA a partir dos dados reais da página do produto. Tom simpático e próximo, como uma amiga indicando.
     ◦ Permitido: linguagem de descoberta e indicação (“olha o que eu encontrei”, “achei super prático”, “olha esse detalhe”).
     ◦ Proibido: afirmar uso pessoal, resultado ou depoimento (“comprei e amei”, “uso todo dia”, “resolveu meu problema”); inventar benefício ou funcionalidade que não esteja na página; promessa de ganho; preço fixo (use “confira o valor atual”); superlativos que não dá para comprovar.
