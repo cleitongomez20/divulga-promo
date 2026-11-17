@@ -4,7 +4,7 @@ import { isShopeeUrl } from './products';
 /** Word the follower comments to receive the link (the automatic reply is built in a later step). */
 export const TRIGGER_WORD = 'EU QUERO';
 /** Added by the code to every AI caption, never left to the AI. */
-export const DISCLOSURE = '#publi · Link de afiliado';
+export const DISCLOSURE = '#publi';
 export const CAPTION_MAX = 2200;
 export const POOL_SIZE = 12;
 /** Prices and availability change: a product collected longer ago than this is not offered to the AI. */
