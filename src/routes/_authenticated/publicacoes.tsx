@@ -25,10 +25,10 @@ const STATUS_STYLE: Record<string, string> = {
 };
 /** The four Instagram formats the manual button can create, with what each one is. */
 const GENERATE_OPTIONS: Record<GenerateFormat, { label: string; hint: string; needsVideo: boolean }> = {
-  reel: { label: 'Reels', hint: 'A IA cria o storyboard, as 6 imagens e depois o vídeo de 30 segundos no Higgsfield, tudo sozinha. Leva alguns minutos e é agendado quando ficar pronto.', needsVideo: true },
-  story: { label: 'Story', hint: 'A IA cria o storyboard, as imagens e o vídeo vertical de Story no Higgsfield, tudo sozinha. Leva alguns minutos e é agendado quando ficar pronto.', needsVideo: true },
+  reel: { label: 'Reels', hint: 'A IA conta uma história de uso do produto em 6 cenas, em formato POV (só as mãos aparecem), cria as imagens e depois o vídeo de 30 segundos no Higgsfield, tudo sozinha. Leva alguns minutos e é agendado quando ficar pronto.', needsVideo: true },
+  story: { label: 'Story', hint: 'A IA conta uma história em formato POV (só as mãos aparecem), cria as imagens e o vídeo vertical de Story no Higgsfield, tudo sozinha. Leva alguns minutos e é agendado quando ficar pronto.', needsVideo: true },
   photo: { label: 'Feed', hint: 'Uma foto real do produto com a legenda escrita pela IA. Fica pronto na hora e é agendado para 10 minutos depois do pedido.', needsVideo: false },
-  carousel: { label: 'Carrossel', hint: '6 imagens quadradas (1:1) criadas pela OpenAI a partir da foto real do produto, com os textos (título, destaques e chamada final) escritos na própria imagem, mais a legenda. Leva alguns minutos e é agendado quando ficar pronto. Precisa da OpenAI conectada.', needsVideo: false },
+  carousel: { label: 'Carrossel', hint: '6 imagens quadradas (1:1) sobre um produto, que contam uma história: gancho de curiosidade, benefícios, continuação, uso, resultado e a chamada Comenta EU QUERO. Os textos ficam escritos na própria imagem. Leva alguns minutos e é agendado quando ficar pronto. Precisa da OpenAI conectada.', needsVideo: false },
 };
 
 function PostsPage() {
