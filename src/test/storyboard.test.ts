@@ -3,7 +3,7 @@ import { memoryDb, type Rows } from './memory-db';
 import { estimateOpenAiImageCostMicros } from '@/lib/openai';
 import { OPENAI_IMAGE_EDITS_URL, OPENAI_IMAGE_GENERATIONS_URL, OPENAI_URL, OpenAiError, askOpenAiImage, callOpenAiImage, connectOpenAiKey } from '@/lib/openai.server';
 import { switchProvider } from '@/lib/ai.server';
-import { SCENE_COUNT, buildPlanPrompt, buildScenePrompt, judgePlan, planSchema, type StoryboardPlan } from '@/lib/storyboard';
+import { CTA_TEXT, SCENE_COUNT, SHOT_TYPES, buildPlanPrompt, buildScenePrompt, judgePlan, planSchema, similarity, type StoryboardPlan } from '@/lib/storyboard';
 import { discardStoryboard, generateScene, listStoryboardProducts, listStoryboards, loadStoryboard, planStoryboard } from '@/lib/storyboard.server';
 
 const NOW = Date.parse('2026-11-13T15:00:00.000Z');
@@ -12,7 +12,17 @@ const MASTER = 'master-key-for-tests';
 const KEY = 'sk-proj-TESTKEY_abcdefghijklmnopqrstuvwxyz0123456789';
 const PRODUCT_URL = 'https://down-br.img.susercontent.com/file/abc123.jpg';
 
-const scene = (n: number, extra: Record<string, unknown> = {}) => ({ title: `Cena ${n}`, shot: `Plano aberto mostrando o produto na mesa, cena ${n}`, motion: 'câmera se aproxima devagar', speech: `Olha esse detalhe ${n}`, on_screen_text: null, ...extra });
+const CAMERAS = ['close_up', 'wide', 'top_down', 'macro', 'low_angle', 'side'];
+const SHOTS = [
+  'Mãos apresentam o organizador fechado diante da câmera sobre uma mesa de madeira clara',
+  'Mãos abrem a caixa de papelão e retiram o organizador com cuidado, embalagem aberta ao lado',
+  'Mãos posicionam o suporte na parede e apertam as presilhas laterais com uma chave pequena',
+  'Detalhe das presilhas metálicas encaixadas e da textura do acabamento em foco',
+  'Parede inteira com tudo instalado, utensílios pendurados em ordem e luz da janela',
+  'Mãos apontam para o conjunto pronto, cozinha organizada ao fundo, final da história',
+];
+const HANDS = 'Mãos de mulher adulta, pele clara, unhas curtas com esmalte nude';
+const scene = (n: number, extra: Record<string, unknown> = {}) => ({ title: `Cena ${n}`, camera: CAMERAS[n - 1], action: `Ação ${n}: as mãos fazem algo diferente`, shot: SHOTS[n - 1], motion: 'câmera se aproxima devagar', speech: `Olha esse detalhe ${n}`, on_screen_text: null, ...extra });
 const planJson = (overrides: Record<string, unknown> = {}, perScene: (n: number) => Record<string, unknown> = () => ({})) => JSON.stringify({
   concept: 'Mostrar o fone no dia a dia', presenter: 'Mulher de 30 anos, cabelo castanho preso, camiseta branca',
   scenes: Array.from({ length: SCENE_COUNT }, (_, i) => scene(i + 1, perScene(i + 1))), ...overrides,
@@ -59,8 +69,9 @@ describe('storyboard plan rules', () => {
   it('needs a presenter and speech in every scene when there is speech, and none when there is not', () => {
     expect(judgePlan(planJson({ presenter: null }), { withSpeech: true }).ok).toBe(false);
     expect(judgePlan(planJson({}, n => (n === 4 ? { speech: null } : {})), { withSpeech: true }).ok).toBe(false);
-    expect(judgePlan(planJson(), { withSpeech: false }).ok).toBe(false);
-    expect(judgePlan(planJson({ presenter: null }, () => ({ speech: null })), { withSpeech: false }).ok).toBe(true);
+    expect(judgePlan(planJson(), { withSpeech: false }).ok).toBe(false); // POV has no speech
+    expect(judgePlan(planJson({ presenter: HANDS }, () => ({ speech: null })), { withSpeech: false }).ok).toBe(true);
+    expect(judgePlan(planJson({ presenter: null }, () => ({ speech: null })), { withSpeech: false }).ok).toBe(false); // the hands must be described
   });
   it('the scene prompt keeps the real product and asks for the same person only when a second reference exists', () => {
     const plan = JSON.parse(planJson()) as StoryboardPlan;
@@ -247,7 +258,7 @@ describe('drawing the scenes', () => {
     expect(String(forms[1]?.get('prompt'))).toMatch(/mesma pessoa/);
   });
   it('does not ask for a second reference when the video has no person', async () => {
-    const env = await ready({ planText: planJson({ presenter: null }, () => ({ speech: null })) }); await planIt(env, false); const ids = sceneIds(env);
+    const env = await ready({ planText: planJson({ presenter: HANDS }, () => ({ speech: null })) }); await planIt(env, false); const ids = sceneIds(env);
     await draw(env, ids[0]!); await draw(env, ids[1]!);
     const forms = env.r.calls.filter(call => call.url === OPENAI_IMAGE_EDITS_URL).map(call => call.init.body as FormData);
     expect(forms[1]?.getAll('image[]')).toHaveLength(1); expect(String(forms[1]?.get('prompt'))).not.toMatch(/mesma pessoa/);
@@ -324,5 +335,56 @@ describe('reading storyboards', () => {
     await discardStoryboard(env.db, U, second.storyboardId);
     expect((await listStoryboards(env.db, U)).map(item => item.id)).toEqual([first.storyboardId]);
     expect(await discardStoryboard(env.db, 'someone-else', first.storyboardId)).toBe(false);
+  });
+});
+
+describe('the story and the camera', () => {
+  it('the prompt asks for a story of use, a different camera in every scene, POV hands and the fixed call to action', () => {
+    const pov = buildPlanPrompt({ title: 'Painel ripado' }, { withSpeech: false }).system;
+    expect(pov).toMatch(/UMA HISTÓRIA de uso do produto/); expect(pov).toMatch(/desembalar/); expect(pov).toMatch(/painel ripado/);
+    for (const type of SHOT_TYPES) expect(pov).toContain(type);
+    expect(pov).toMatch(/não repita nenhum/i); expect(pov).toMatch(/Formato POV/); expect(pov).toMatch(/SOMENTE AS MÃOS/); expect(pov).toMatch(/exatamente "Comenta EU QUERO"/); expect(pov).toMatch(/Nunca escreva "link na bio"/);
+    const speaking = buildPlanPrompt({ title: 'Painel ripado' }, { withSpeech: true }).system;
+    expect(speaking).toMatch(/personagem que fala/); expect(speaking).not.toMatch(/Formato POV/);
+  });
+  it('refuses a camera angle used twice, and says which scenes', () => {
+    const verdict = judgePlan(planJson({}, n => (n === 4 ? { camera: 'close_up' } : {})), { withSpeech: true });
+    expect(verdict.ok).toBe(false); expect(verdict.ok ? '' : verdict.problems.join(' ')).toMatch(/as cenas 1 e 4 usam o mesmo ângulo de câmera \(close_up\)/);
+  });
+  it('refuses scenes that describe almost the same picture', () => {
+    const verdict = judgePlan(planJson({}, n => (n >= 2 ? { shot: SHOTS[0] as string } : {})), { withSpeech: true });
+    expect(verdict.ok).toBe(false); expect(verdict.ok ? '' : verdict.problems.join(' ')).toMatch(/quase a mesma imagem/);
+    expect(similarity(SHOTS[0] as string, SHOTS[1] as string)).toBeLessThan(0.3); expect(similarity(SHOTS[0] as string, SHOTS[0] as string)).toBe(1);
+  });
+  it('the last scene always carries the comment call, whatever the AI wrote', () => {
+    for (const written of [null, 'Link na bio'.replace('bio', 'agora'), 'Comente já']) {
+      const verdict = judgePlan(planJson({}, n => (n === 6 ? { on_screen_text: written } : {})), { withSpeech: true });
+      expect(verdict.ok && verdict.plan.scenes[5]?.on_screen_text).toBe(CTA_TEXT);
+    }
+    expect(CTA_TEXT).toBe('Comenta EU QUERO');
+  });
+  it('refuses to send people to the bio', () => {
+    const verdict = judgePlan(planJson({}, n => (n === 2 ? { on_screen_text: 'Link na bio' } : {})), { withSpeech: true });
+    expect(verdict.ok).toBe(false); expect(verdict.ok ? '' : verdict.problems.join(' ')).toMatch(/não mande ninguém para a bio/);
+  });
+  it('the scene prompt gives the camera and the action, and says the reference photo is only for the look of the product', () => {
+    const plan = JSON.parse(planJson()) as StoryboardPlan;
+    const prompt = buildScenePrompt(plan, { title: 'Cena 3', shot: SHOTS[2] as string, camera: 'top_down', action: 'Mãos posicionam o suporte' }, 2, { samePersonReference: false });
+    expect(prompt).toContain('vista de cima'); expect(prompt).toContain('Ação: Mãos posicionam o suporte.'); expect(prompt).toMatch(/NÃO copie o enquadramento, o fundo, a pose nem a composição/);
+    expect(prompt).toMatch(/cena 3 de 6/);
+  });
+  it('POV describes only the hands and never asks for a second reference', () => {
+    const prompt = buildScenePrompt({ presenter: HANDS }, { title: 'Cena 2', shot: SHOTS[1] as string, camera: 'wide', action: 'Mãos abrem a caixa' }, 1, { samePersonReference: true, pov: true });
+    expect(prompt).toMatch(/SOMENTE as mãos/); expect(prompt).toMatch(/nunca rosto nem corpo/); expect(prompt).toContain(HANDS); expect(prompt).not.toMatch(/segunda imagem de referência/); expect(prompt).not.toMatch(/Pessoa na cena/);
+    const speaking = buildScenePrompt(JSON.parse(planJson()) as StoryboardPlan, { title: 'Cena 2', shot: SHOTS[1] as string }, 1, { samePersonReference: true });
+    expect(speaking).toMatch(/segunda imagem de referência/); expect(speaking).toMatch(/NÃO copie o enquadramento, a pose nem o cenário dela/);
+  });
+  it('a scene drawn in POV uses only the product photo and carries the camera and the action of the plan', async () => {
+    const env = await ready({ planText: planJson({ presenter: HANDS }, () => ({ speech: null })) }); await planIt(env, false); const ids = sceneIds(env);
+    await draw(env, ids[0]!); await draw(env, ids[2]!);
+    const forms = env.r.calls.filter(call => call.url === OPENAI_IMAGE_EDITS_URL).map(call => call.init.body as FormData);
+    expect(forms.every(form => form.getAll('image[]').length === 1)).toBe(true);
+    expect(String(forms[1]?.get('prompt'))).toContain('vista de cima'); expect(String(forms[1]?.get('prompt'))).toContain('Ação 3: as mãos fazem algo diferente.');
+    expect(String(forms[1]?.get('prompt'))).toMatch(/SOMENTE as mãos/);
   });
 });

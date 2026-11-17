@@ -9,7 +9,7 @@ import {
 import { startStoryContent } from '@/lib/story-video.server';
 import { startVideoDraft } from '@/lib/video-brain.server';
 import { advanceVideoJobs } from '@/lib/video-jobs.server';
-import { SCENE_COUNT } from '@/lib/storyboard';
+import { SCENE_COUNT, type ShotType } from '@/lib/storyboard';
 import type { ProductCandidate } from '@/lib/content-brain';
 import { VIDEO_TOOLS } from '@/lib/video-brain';
 
@@ -27,7 +27,16 @@ const direction = (extra: Record<string, unknown> = {}) => JSON.stringify({
   chosen_product_id: 'prod-1', reason: 'Boa nota e muitas vendas, combina com o tema', angle: 'organização do dia a dia', hook: 'Olha o que eu encontrei para a sua bancada',
   caption: 'Achei um jeitinho de deixar a bancada organizada.\nCabe tudo e ainda fica bonito, olha esse detalhe.', hashtags: ['#organizacao', '#casa', '#bancada', '#achadinhos', '#shopee'], tool: 'seedance_2_5', duration: 30, ...extra,
 });
-const sceneList = (speech: boolean): StoryScene[] => Array.from({ length: SCENE_COUNT }, (_, i) => ({ shot: `Plano mostrando o produto na bancada, cena ${i + 1}`, motion: 'câmera se aproxima devagar', speech: speech ? `Olha esse detalhe ${i + 1}` : null }));
+const CAMERAS: ShotType[] = ['close_up', 'wide', 'top_down', 'macro', 'low_angle', 'side'];
+const SHOTS = [
+  'Mãos apresentam o organizador fechado diante da câmera sobre uma mesa de madeira clara',
+  'Mãos abrem a caixa de papelão e retiram o organizador com cuidado, embalagem aberta ao lado',
+  'Mãos posicionam o suporte na parede e apertam as presilhas laterais com uma chave pequena',
+  'Detalhe das presilhas metálicas encaixadas e da textura do acabamento em foco',
+  'Parede inteira com tudo instalado, utensílios pendurados em ordem e luz da janela',
+  'Mãos apontam para o conjunto pronto, cozinha organizada ao fundo, final da história',
+];
+const sceneList = (speech: boolean): StoryScene[] => Array.from({ length: SCENE_COUNT }, (_, i) => ({ shot: SHOTS[i] as string, motion: 'câmera se aproxima devagar', speech: speech ? `Olha esse detalhe ${i + 1}` : null, camera: CAMERAS[i] as ShotType, action: `Ação ${i + 1}` }));
 
 describe('the storyboard video tools', () => {
   it('offers the four chosen tools, with the endpoints of the Higgsfield documentation', () => {
@@ -46,7 +55,7 @@ describe('the storyboard video tools', () => {
     for (const id of STORY_TOOL_IDS) expect(withSpeech.system).toContain(id);
     expect(withSpeech.system).toMatch(/de 4 a 30 segundos/); expect(withSpeech.system).toMatch(/Um personagem fala/); expect(withSpeech.system).not.toContain('kling');
     expect(withSpeech.system).toMatch(/Nunca escreva preço/); expect(withSpeech.user).toContain('prod-1');
-    expect(buildStoryDirectionPrompt('story', [candidate], { withSpeech: false }).system).toMatch(/não tem fala/);
+    expect(buildStoryDirectionPrompt('story', [candidate], { withSpeech: false }).system).toMatch(/formato POV: só as mãos aparecem, sem rosto e sem fala/);
   });
 });
 
@@ -94,9 +103,16 @@ describe('the video prompt and the request body', () => {
     const spoken = buildStoryVideoPrompt('wan_3_0', { scenes: sceneList(true), presenter: 'Pessoa', seconds: 30, withSpeech: false });
     expect(spoken).not.toContain('Olha esse detalhe');
   });
+  it('POV: the camera is the viewer, only the hands appear, and every scene is a different moment with its own camera', () => {
+    const prompt = buildStoryVideoPrompt('seedance_2_5', { scenes: sceneList(false), presenter: 'Mãos de mulher adulta, pele clara', seconds: 30, withSpeech: false });
+    expect(prompt).toContain('First-person POV video'); expect(prompt).toContain('ONLY the hands'); expect(prompt).toContain('never a face or body'); expect(prompt).toContain('Mãos de mulher adulta, pele clara');
+    expect(prompt).toContain('Ação 1.'); expect(prompt).toContain('Shot: close-up on the product'); expect(prompt).toContain('Shot: macro shot of a texture or material detail'); expect(prompt).toContain('different moment of one story');
+    expect(prompt).toContain('No speech.'); expect(prompt).not.toContain('The same presenter');
+    expect(buildStoryVideoPrompt('seedance_2_5', { scenes: sceneList(true), presenter: 'Mulher de 30 anos', seconds: 30, withSpeech: true })).not.toContain('POV');
+  });
   it('the short-clip tool uses only the first scene', () => {
     const prompt = buildStoryVideoPrompt('ltx_2_5', { scenes: sceneList(true), presenter: 'Pessoa', seconds: 10, withSpeech: true });
-    expect(prompt).toContain('cena 1'); expect(prompt).not.toContain('cena 2'); expect(prompt).not.toContain('Scene 1');
+    expect(prompt).toContain(SHOTS[0] as string); expect(prompt).not.toContain(SHOTS[1] as string); expect(prompt).not.toContain('Scene 1');
   });
   it('builds the body of each tool as the documentation lists it', () => {
     const urls = Array.from({ length: 12 }, (_, i) => `https://files.test/${i + 1}.jpg`);
@@ -112,15 +128,15 @@ const IMAGE_B64 = Buffer.from(new Uint8Array(2000).fill(7)).toString('base64');
 const imageOk = () => ({ data: [{ b64_json: IMAGE_B64 }], usage: { input_tokens: 800, input_tokens_details: { text_tokens: 300, image_tokens: 500 }, output_tokens: 1056 } });
 const textReply = (text: string) => ({ json: { status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text }] }], usage: { input_tokens: 400, output_tokens: 900 } } });
 const planJson = (speech: boolean) => JSON.stringify({
-  concept: 'Mostrar o organizador no dia a dia', presenter: speech ? 'Mulher de 30 anos, cabelo castanho preso, camiseta branca' : null,
-  scenes: Array.from({ length: SCENE_COUNT }, (_, i) => ({ title: `Cena ${i + 1}`, shot: `Plano mostrando o produto na bancada, cena ${i + 1}`, motion: 'câmera se aproxima devagar', speech: speech ? `Olha esse detalhe ${i + 1}` : null, on_screen_text: null })),
+  concept: 'Mostrar o organizador no dia a dia', presenter: speech ? 'Mulher de 30 anos, cabelo castanho preso, camiseta branca' : 'Mãos de mulher adulta, pele clara, unhas curtas com esmalte nude',
+  scenes: Array.from({ length: SCENE_COUNT }, (_, i) => ({ title: `Cena ${i + 1}`, camera: CAMERAS[i], action: `Ação ${i + 1}: as mãos fazem algo diferente`, shot: SHOTS[i], motion: 'câmera se aproxima devagar', speech: speech ? `Olha esse detalhe ${i + 1}` : null, on_screen_text: null })),
 });
 const carouselPlanJson = () => JSON.stringify({
   concept: 'Mostrar como o organizador deixa a bancada em ordem', theme: 'cozinha clara e aconchegante, tons de madeira e branco, luz natural',
   slides: [
-    { title: 'Capa', shot: 'O organizador sobre uma bancada de cozinha clara, em destaque', headline: 'Sua bancada em ordem', subheadline: 'Um jeito prático de organizar', badge: 'Modo organização', callouts: [], cta: null },
-    ...[2, 3, 4, 5].map(n => ({ title: `Detalhe ${n}`, shot: `Detalhe ${n} do organizador com utensílios guardados`, headline: null, subheadline: null, badge: null, callouts: [`Detalhe ${n} do produto`, 'Cabe tudo'], cta: null })),
-    { title: 'Chamada final', shot: 'O organizador completo na bancada com a cozinha ao fundo', headline: 'Quer o seu?', subheadline: null, badge: null, callouts: [], cta: 'Comente EU QUERO' },
+    { title: 'Capa', camera: CAMERAS[0], shot: SHOTS[0], headline: 'Já viu um organizador assim?', subheadline: 'Um jeito prático de organizar', badge: 'Modo organização', callouts: [], cta: null },
+    ...[2, 3, 4, 5].map(n => ({ title: `Detalhe ${n}`, camera: CAMERAS[n - 1], shot: SHOTS[n - 1], headline: null, subheadline: null, badge: null, callouts: [`Detalhe ${n} do produto`, 'Cabe tudo'], cta: null })),
+    { title: 'Chamada final', camera: CAMERAS[5], shot: SHOTS[5], headline: 'Quer o seu?', subheadline: null, badge: null, callouts: [], cta: 'Comenta EU QUERO' },
   ],
 });
 const photoBytes = () => { const bytes = new Uint8Array(6000).fill(9); bytes[0] = 0xff; bytes[1] = 0xd8; bytes[2] = 0xff; return bytes; };
@@ -141,12 +157,12 @@ function router(handlers: Record<string, (call: Call, index: number) => Reply>) 
   return { fetcher, calls, to: (prefix: string) => calls.filter(call => call.url.startsWith(prefix)) };
 }
 
-async function world(options: { speech?: boolean; hfConnected?: boolean; images?: (index: number) => Reply; order?: (index: number) => Reply; status?: () => Reply; texts?: string[] } = {}) {
+async function world(options: { speech?: boolean | 'default'; hfConnected?: boolean; images?: (index: number) => Reply; order?: (index: number) => Reply; status?: () => Reply; texts?: string[] } = {}) {
   const files = new Map<string, Uint8Array>();
   const hfSecret = await sealJson({ keyId: 'a1b2c3d4-e5f6-4789-abcd-0123456789ab', keySecret: 'S3cr3t_VALUE-abcdefghijklmnopqrstuvwxyz012345' }, MASTER, U, 'higgsfield');
   const built = memoryDb({
     settings: [], connector_secrets: options.hfConnected === false ? [] : [{ id: 'sec-hf', user_id: U, ciphertext: hfSecret, key_version: 1 }],
-    openai_connections: [], openai_usage: [], ai_connections: [], ai_settings: [], activity_log: [], automation_settings: options.speech === false ? [{ user_id: U, storyboard_speech: false }] : [],
+    openai_connections: [], openai_usage: [], ai_connections: [], ai_settings: [], activity_log: [], automation_settings: options.speech === 'default' ? [] : [{ user_id: U, storyboard_speech: options.speech !== false }],
     media_connections: options.hfConnected === false ? [] : [{ id: 'm1', user_id: U, provider: 'higgsfield', credential_id: 'sec-hf', status: 'connected', monthly_cap_cents: null, last_tested_at: null, last_error: null }],
     media_usage: [], instagram_accounts: [{ id: 'ig1', user_id: U, created_at: '2026-10-01T00:00:00.000Z' }],
     products: [{ id: 'prod-1', user_id: U, marketplace: 'shopee', external_id: '1', title: candidate.title, price: 29.9, commission: 0.12, sales: 5000, rating: 4.8, images: [PRODUCT_URL], url: candidate.url, collected_at: daysAgo(2) }],
@@ -160,7 +176,7 @@ async function world(options: { speech?: boolean; hfConnected?: boolean; images?
     getPublicUrl: (path: string) => ({ data: { publicUrl: `https://files.test/${path}` } }),
   }) };
   const db = { ...built.db, storage } as never;
-  const texts = options.texts ?? [direction(), planJson(options.speech !== false)];
+  const texts = options.texts ?? [direction(), planJson(options.speech !== false && options.speech !== 'default')];
   const r = router({
     [OPENAI_URL]: (_call, index) => textReply(texts[Math.min(index, texts.length - 1)] as string),
     [PRODUCT_URL]: () => ({ bytes: photoBytes() }),
@@ -200,11 +216,21 @@ describe('starting a Reels with the storyboard', () => {
     await start(w, 'reel', { auto: { mode: 'approval', scheduledAt: new Date(NOW).toISOString() } });
     expect(post(w)).toMatchObject({ source: 'auto' });
   });
-  it('with the speech option off, the storyboard has no person and the video no audio', async () => {
+  it('without the speech option the video is POV: only hands, no speech and no audio', async () => {
+    for (const speech of [false, 'default'] as const) {
+      const w = await world({ speech });
+      await start(w, 'reel');
+      expect(post(w)['video_job']).toMatchObject({ withSpeech: false });
+      expect(String((w.tables['storyboards']?.[0] as Record<string, unknown>)['presenter'])).toContain('Mãos');
+      expect((w.tables['storyboards']?.[0] as Record<string, unknown>)['with_speech']).toBe(false);
+    }
+  });
+  it('the scenes tell a story with a different camera each, and the last one carries the comment call', async () => {
     const w = await world({ speech: false });
     await start(w, 'reel');
-    expect(post(w)['video_job']).toMatchObject({ withSpeech: false });
-    expect((w.tables['storyboards']?.[0] as Record<string, unknown>)['presenter']).toBeNull();
+    const plan = (w.tables['storyboards']?.[0] as Record<string, unknown>)['plan'] as { scenes: { camera: string; on_screen_text: string | null }[] };
+    expect(new Set(plan.scenes.map(scene => scene.camera)).size).toBe(6); expect(plan.scenes[5]?.on_screen_text).toBe('Comenta EU QUERO');
+    expect((w.tables['storyboard_scenes'] as Record<string, unknown>[]).find(row => row['position'] === 5)).toMatchObject({ on_screen_text: 'Comenta EU QUERO' });
   });
   it('startVideoDraft uses this flow whenever OpenAI is connected', async () => {
     const w = await world();
@@ -339,6 +365,54 @@ describe('when the video fails at Higgsfield', () => {
   });
 });
 
+describe('credits and waiting at Higgsfield', () => {
+  const urls = (w: World) => orders(w).map(call => call.url.replace(`${HF}/`, ''));
+  it('says on the post that it is waiting for Higgsfield, with the tool', async () => {
+    const w = await world();
+    await start(w, 'reel');
+    await tick(w); await tick(w); await tick(w);
+    expect(String(post(w)['error'])).toBe('Esperando o Higgsfield criar o vídeo com Seedance 2.5 (leva de 10 a 20 minutos).');
+  });
+  it('an order refused for lack of credits is tried with another tool from the same images, without waiting', async () => {
+    let n = 0;
+    const w = await world({ order: () => (n++ === 0 ? { status: 403, json: { detail: 'insufficient credits' } } : { json: { status: 'queued', request_id: 'req-2' } }) });
+    await start(w, 'reel');
+    await tick(w); await tick(w); await tick(w); // the third visit finishes the images and the order is refused
+    expect(post(w)['video_job']).toMatchObject({ stage: 'storyboard', requestId: null, tool: 'wan_3_0', triedTools: ['seedance_2_5'] });
+    expect(String(post(w)['error'])).toMatch(/Seedance 2\.5.*saldo insuficiente.*Wan 3\.0/);
+    expect(w.tables['media_usage']).toHaveLength(0);
+    expect(w.tables['activity_log']?.some(entry => entry['action'] === 'Vídeo refeito com outra ferramenta' && (entry['details'] as Record<string, unknown>)['reason'] === 'saldo insuficiente')).toBe(true);
+    await tick(w);
+    expect(urls(w)).toEqual(['bytedance/seedance-2.5/reference-to-video', 'alibaba/wan-3.0/reference-to-video']);
+    expect(post(w)['video_job']).toMatchObject({ stage: 'video', tool: 'wan_3_0', requestId: 'req-2' });
+    expect(w.tables['media_usage']).toHaveLength(1); expect(w.r.to(OPENAI_IMAGE_EDITS_URL)).toHaveLength(6);
+  });
+  it('when no tool fits the balance the post fails at once, with the reason, instead of waiting', async () => {
+    const w = await world({ order: () => ({ status: 403, json: { detail: 'insufficient credits' } }) });
+    await start(w, 'reel');
+    for (let i = 0; i < 5; i++) await tick(w);
+    expect(urls(w)).toEqual(['bytedance/seedance-2.5/reference-to-video', 'alibaba/wan-3.0/reference-to-video', 'higgsfield/cinema-studio/4.0']);
+    expect(post(w)).toMatchObject({ status: 'failed' }); expect(String(post(w)['error'])).toMatch(/sem saldo de créditos para este vídeo \(Cinema Studio 4\.0\).*Console do Higgsfield/);
+  });
+  it('a video that fails for lack of credits ends with the same clear message', async () => {
+    const w = await world({ status: () => ({ json: { status: 'failed', error: 'Your credit balance is too low to complete this request. Please top up your balance and try again.' } }) });
+    await start(w, 'reel');
+    for (let i = 0; i < 8; i++) await tick(w);
+    expect(post(w)).toMatchObject({ status: 'failed' }); expect(String(post(w)['error'])).toMatch(/sem saldo de créditos para este vídeo \(Cinema Studio 4\.0\)/);
+    const entry = w.tables['activity_log']?.find(item => item['action'] === 'Vídeo não foi gerado') as Record<string, unknown>;
+    expect(String((entry['details'] as Record<string, unknown>)['higgsfield_status'])).toContain('credit balance is too low');
+  });
+  it('a post that only waits for Higgsfield never holds back another post that has images to draw', async () => {
+    const w = await world({ order: () => ({ status: 503, json: { detail: 'unavailable' } }), texts: [direction(), planJson(true), direction(), planJson(true)] });
+    await start(w, 'reel');
+    await tick(w); await tick(w); await tick(w);
+    expect(scenesDone(w)).toBe(6); expect(String(post(w)['error'])).toMatch(/Higgsfield/);
+    await start(w, 'reel');
+    await tick(w);
+    expect(scenesDone(w)).toBe(7); // the second post drew its first image although the first one is still waiting
+  });
+});
+
 describe('the speech of each scene follows the length of the video', () => {
   it('allows about two words a second, spread over the six scenes', () => {
     expect(maxSpeechWords('seedance_2_5', 30)).toBe(11); expect(maxSpeechWords('wan_3_0', 15)).toBe(5); expect(maxSpeechWords('cinema_studio_4', 6)).toBe(3);
@@ -385,11 +459,12 @@ describe('a carousel from the storyboard images', () => {
     expect(forms.every(form => form.get('size') === '1024x1024')).toBe(true);
     expect(forms.every(form => form.getAll('image[]').length === 1)).toBe(true); // only the product photo: no person to copy
     const prompts = forms.map(form => String(form.get('prompt')));
-    expect(prompts[0]).toContain('"Sua bancada em ordem"'); expect(prompts[0]).toContain('"Um jeito prático de organizar"'); expect(prompts[0]).toContain('"Modo organização"');
+    expect(prompts[0]).toContain('"Já viu um organizador assim?"'); expect(prompts[0]).toContain('"Um jeito prático de organizar"'); expect(prompts[0]).toContain('"Modo organização"');
     expect(prompts[1]).toContain('"Detalhe 2 do produto"'); expect(prompts[1]).toContain('seta fina e curva');
-    expect(prompts[5]).toContain('"Comente EU QUERO"'); expect(prompts[5]).toContain('slide 6 de 6');
+    expect(prompts[5]).toContain('"Comenta EU QUERO"'); expect(prompts[5]).toContain('slide 6 de 6');
+    expect(new Set(prompts.map(prompt => prompt.split('\n').find(line => line.startsWith('Enquadramento')))).size).toBe(6);
     expect(w.tables['storyboards']?.[0]).toMatchObject({ presenter: null, with_speech: false, plan: expect.objectContaining({ kind: 'carousel' }) });
-    expect((w.tables['storyboard_scenes'] as Record<string, unknown>[])[0]).toMatchObject({ on_screen_text: 'Sua bancada em ordem', speech: null });
+    expect((w.tables['storyboard_scenes'] as Record<string, unknown>[])[0]).toMatchObject({ on_screen_text: 'Já viu um organizador assim?', speech: null });
   });
   it('does not need Higgsfield', async () => {
     const w = await world({ texts: carouselTexts(), hfConnected: false });
