@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { checkCaption, extractJson, normalizeHashtags, type ProductCandidate } from './content-brain';
-import { SCENE_COUNT } from './storyboard';
+import { SCENE_COUNT, SHOT_LABELS_EN, type ShotType } from './storyboard';
 import { VIDEO_TOOLS, type VideoFormat, type VideoJob, type VideoToolId } from './video-brain';
 
 /**
@@ -52,7 +52,7 @@ export function buildStoryDirectionPrompt(format: VideoFormat, candidates: reado
   const system = [
     'Você é o diretor de conteúdo de uma conta brasileira de Instagram que indica produtos da Shopee como afiliada.',
     `Sua tarefa: escolher UM produto da lista, escolher a ferramenta de vídeo e escrever a legenda de ${format === 'reel' ? 'um Reels' : 'um Story'} vertical (9:16).`,
-    `O vídeo é montado a partir de um storyboard de 6 cenas com imagens feitas a partir da foto real do produto. ${options.withSpeech ? 'Um personagem fala nas cenas.' : 'O vídeo não tem fala.'}`,
+    `O vídeo é montado a partir de um storyboard de 6 cenas com imagens feitas a partir da foto real do produto. ${options.withSpeech ? 'Um personagem fala nas cenas.' : 'O vídeo é em formato POV: só as mãos aparecem, sem rosto e sem fala.'}`,
     '',
     'Ferramentas de vídeo disponíveis:',
     catalog,
@@ -97,7 +97,7 @@ export function judgeStoryDirection(text: string, format: VideoFormat, candidate
   return problems.length ? { ok: false, problems } : { ok: true, output };
 }
 
-export type StoryScene = { shot: string; motion: string; speech: string | null };
+export type StoryScene = { shot: string; motion: string; speech: string | null; camera?: ShotType | undefined; action?: string | undefined };
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text);
 const imageRef = (tool: StoryToolId, index: number) => (tool === 'cinema_studio_4' ? `<<<image_${index}>>>` : `Image ${index}`);
 
@@ -106,6 +106,8 @@ const imageRef = (tool: StoryToolId, index: number) => (tool === 'cinema_studio_
  * Without speech the video is silent, and the prompt says so.
  */
 export function buildStoryVideoPrompt(tool: StoryToolId, p: { scenes: readonly StoryScene[]; presenter: string | null; seconds: number; withSpeech: boolean }): string {
+  // Without speech the video is in POV: the camera is the person's eyes and only the hands appear.
+  const pov = !p.withSpeech && p.presenter !== null;
   if (VIDEO_TOOLS[tool].mode === 'frame') {
     const first = p.scenes[0];
     return clip([
@@ -117,12 +119,16 @@ export function buildStoryVideoPrompt(tool: StoryToolId, p: { scenes: readonly S
   const each = Math.max(1, Math.round(p.seconds / Math.max(1, p.scenes.length)));
   const lines = p.scenes.map((scene, index) => {
     const speech = p.withSpeech && scene.speech ? ` The presenter says in Brazilian Portuguese, slowly and very clearly, in a natural friendly voice: "${scene.speech}"` : '';
-    return `Scene ${index + 1} (${imageRef(tool, index + 1)}, about ${each} seconds): ${clip(scene.shot, 220)} Camera and motion: ${clip(scene.motion, 140)}.${speech}`;
+    const action = scene.action ? `${clip(scene.action, 120)}. ` : '';
+    const camera = scene.camera ? ` Shot: ${SHOT_LABELS_EN[scene.camera]}.` : '';
+    return `Scene ${index + 1} (${imageRef(tool, index + 1)}, about ${each} seconds): ${action}${clip(scene.shot, 200)}${camera} Camera and motion: ${clip(scene.motion, 140)}.${speech}`;
   });
   return [
     `Vertical 9:16 advertising video of about ${p.seconds} seconds, in ${p.scenes.length} scenes, one for each reference image, in order.`,
     'Keep the product exactly as shown in the images: same shape, color and labels. Natural, realistic motion and smooth cuts between scenes.',
     p.presenter && p.withSpeech ? `The same presenter appears in the scenes: ${clip(p.presenter, 200)}.` : '',
+    pov ? `First-person POV video: the camera is the viewer's eyes and ONLY the hands of the person are visible, never a face or body. The same hands in every scene: ${clip(p.presenter as string, 200)}.` : '',
+    'Every scene is a different moment of one story, with a different camera angle and a different action, following the order of the images.',
     ...lines,
     `No text, captions, logos or watermarks in the video.${p.withSpeech ? '' : ' No speech.'}`,
   ].filter(Boolean).join('\n');

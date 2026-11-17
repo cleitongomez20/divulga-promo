@@ -14,10 +14,11 @@ import type { AutomationMode } from './automation';
 import { MEDIA_BUCKET } from './posts';
 import { encodeSubIds } from './products';
 import {
-  MAX_SCENE_TRIES, MAX_SCENES_PER_VISIT, STORYBOARD_STUCK_MS, STORY_TOOL_IDS, buildStoryBody, maxSpeechWords, buildStoryDirectionPrompt, buildStoryVideoPrompt, judgeStoryDirection,
+  MAX_SCENE_TRIES, MAX_SCENES_PER_VISIT, STORYBOARD_STUCK_MS, STORY_TOOL_IDS, buildStoryBody, maxSpeechWords, nextFallbackTool, buildStoryDirectionPrompt, buildStoryVideoPrompt, judgeStoryDirection,
   type StoryToolId,
 } from './story-video';
 import { generateScene, planStoryboard } from './storyboard.server';
+import { SHOT_TYPES, type ShotType } from './storyboard';
 import { MAX_CONCURRENT_VIDEOS, VIDEO_TOOLS, estimateVideoMicros, type VideoFormat, type VideoJob } from './video-brain';
 
 type Db = SupabaseClient;
@@ -130,6 +131,10 @@ const TRANSIENT = new Set(['busy', 'server', 'network', 'timeout', 'unavailable'
  */
 export async function advanceStoryStage(db: Db, p: {
   post: Row; job: VideoJob; masterKey: string; fetcher?: Fetcher; now?: () => number;
+  /** Whether this visit may still draw images. Drawing is slow, so the scheduler lets only one post draw per visit; ordering and finishing are quick and always allowed. */
+  drawing?: boolean;
+  /** Set to drew: true when this visit drew images, so the scheduler knows the drawing slot was used. */
+  state?: { drew: boolean };
 }): Promise<StageOutcome> {
   const fetcher = p.fetcher ?? fetch; const now = p.now ?? Date.now;
   const postId = str(p.post['id']); const userId = str(p.post['user_id']); const job = p.job;
@@ -146,9 +151,11 @@ export async function advanceStoryStage(db: Db, p: {
   if (dead) return { kind: 'fail', message: str(dead['last_error']) || 'Uma das imagens do storyboard não pôde ser criada. Tente de novo.' };
 
   const pending = scenes.filter(scene => str(scene['status']) !== 'done');
+  if (pending.length && p.drawing === false) return { kind: 'wait' };
   if (pending.length) {
     // The first scene alone (the next ones copy its person), then a few at a time.
     const batch = str((scenes[0] as Row)['status']) !== 'done' ? [scenes[0] as Row] : pending.slice(0, MAX_SCENES_PER_VISIT);
+    if (p.state) p.state.drew = true;
     await Promise.allSettled(batch.map(scene => generateScene(db, { userId, masterKey: p.masterKey, sceneId: str(scene['id']), fetcher, now })));
     scenes = await load();
     if (scenes.some(scene => str(scene['status']) !== 'done')) {
@@ -182,10 +189,15 @@ export async function advanceStoryStage(db: Db, p: {
     if (error instanceof HiggsfieldError) return TRANSIENT.has(error.kind) ? { kind: 'wait', note: higgsfieldErrorMessage(error.kind, error.detail) } : { kind: 'fail', message: higgsfieldErrorMessage(error.kind, error.detail) };
     return { kind: 'wait' };
   }
-  const { data: board } = await db.from('storyboards').select('presenter').eq('id', job.storyboardId).eq('user_id', userId).maybeSingle();
+  const { data: board } = await db.from('storyboards').select('presenter,plan').eq('id', job.storyboardId).eq('user_id', userId).maybeSingle();
+  const planned = (board as Row | null)?.['plan'] && typeof (board as Row)['plan'] === 'object' && Array.isArray(((board as Row)['plan'] as Row)['scenes']) ? (((board as Row)['plan'] as Row)['scenes'] as Row[]) : [];
   const withSpeech = job.withSpeech === true;
   const videoPrompt = buildStoryVideoPrompt(toolId, {
-    scenes: scenes.map(scene => ({ shot: str(scene['shot']), motion: str(scene['motion']), speech: str(scene['speech']) || null })),
+    scenes: scenes.map((scene, index) => {
+      const extra = planned[index] ?? {};
+      const camera = (SHOT_TYPES as readonly string[]).includes(str(extra['camera'])) ? (str(extra['camera']) as ShotType) : undefined;
+      return { shot: str(scene['shot']), motion: str(scene['motion']), speech: str(scene['speech']) || null, camera, action: str(extra['action']) || undefined };
+    }),
     presenter: str((board as Row | null)?.['presenter']) || null, seconds: job.duration, withSpeech,
   });
   const imageUrls = assetIds.map(id => db.storage.from(MEDIA_BUCKET).getPublicUrl(pathOf.get(id) as string).data.publicUrl);
@@ -196,13 +208,28 @@ export async function advanceStoryStage(db: Db, p: {
     const requestId = str(res.json?.['request_id']);
     if (res.status < 200 || res.status >= 300 || !requestId) throw errorForStatus(res.status, str(res.json?.['detail']), res.retryAfter);
     const confirmed: VideoJob = { ...job, requestId, stage: 'video', estimatedMicros: estimate, startedAt: now() };
-    await db.from('posts').update({ video_job: confirmed, error: null }).eq('id', postId).eq('user_id', userId);
+    await db.from('posts').update({ video_job: confirmed, error: `Esperando o Higgsfield criar o vídeo com ${tool.label} (leva de 10 a 20 minutos).` }).eq('id', postId).eq('user_id', userId);
     await recordMediaUsage(db, userId, { purpose: 'video', model: tool.endpoint, costMicros: estimate, at: now() });
     await db.from('activity_log').insert({ user_id: userId, action: 'Vídeo pedido ao Higgsfield', result: `${p.post['format'] === 'story' ? 'Story' : 'Reels'} de ${job.duration}s com ${tool.label}, a partir de ${imageUrls.length} imagens`, details: { post_id: postId, tool: job.tool, estimated_micros: estimate } });
     return { kind: 'ordered' };
   } catch (error) {
+    if (error instanceof HiggsfieldError && error.kind === 'balance') return retoolOrFail(db, { post: p.post, job, now, reason: 'saldo insuficiente' });
     if (error instanceof HiggsfieldError) return TRANSIENT.has(error.kind) ? { kind: 'wait', note: higgsfieldErrorMessage(error.kind, error.detail) } : { kind: 'fail', message: higgsfieldErrorMessage(error.kind, error.detail) };
     return { kind: 'wait', note: higgsfieldErrorMessage('network') };
   }
+}
+
+/**
+ * The order was refused for lack of credits. Higgsfield charges different amounts per tool, so another tool may fit the balance: it is tried with the same
+ * images. Waiting would not help (credits do not appear by themselves), so when no tool is left the post fails at once, with the reason.
+ */
+async function retoolOrFail(db: Db, p: { post: Row; job: VideoJob; now: () => number; reason: string }): Promise<StageOutcome> {
+  const postId = str(p.post['id']); const userId = str(p.post['user_id']); const label = VIDEO_TOOLS[p.job.tool].label;
+  const next = nextFallbackTool(p.job);
+  if (!next) return { kind: 'fail', message: `O Higgsfield está sem saldo de créditos para este vídeo (${label}). Adicione créditos no Console do Higgsfield e tente de novo.` };
+  const retry: VideoJob = { ...p.job, requestId: null, stage: 'storyboard', tool: next.tool, endpoint: VIDEO_TOOLS[next.tool].endpoint, duration: next.duration, estimatedMicros: 0, startedAt: p.now(), triedTools: [...(p.job.triedTools ?? []), p.job.tool] };
+  await db.from('posts').update({ video_job: retry, error: `O Higgsfield recusou o pedido com ${label} (${p.reason}). Tentando com ${VIDEO_TOOLS[next.tool].label}...` }).eq('id', postId).eq('user_id', userId).eq('status', 'rendering');
+  await db.from('activity_log').insert({ user_id: userId, action: 'Vídeo refeito com outra ferramenta', result: `${label} recusado (${p.reason}); tentando com ${VIDEO_TOOLS[next.tool].label}`, details: { post_id: postId, failed_tool: p.job.tool, next_tool: next.tool, reason: p.reason } });
+  return { kind: 'wait' };
 }
 

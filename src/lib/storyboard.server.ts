@@ -10,7 +10,7 @@ import { DEFAULT_IMAGE_MODEL, openAiErrorMessage } from './openai';
 import { OpenAiError, askOpenAiImage } from './openai.server';
 import { MEDIA_BUCKET } from './posts';
 import { CAROUSEL_IMAGE_SIZE, buildCarouselImagePrompt, buildCarouselPlanPrompt, carouselFeedback, judgeCarouselPlan, type CarouselPlan } from './carousel';
-import { SCENE_COUNT, SCENE_STALE_MS, buildPlanPrompt, buildScenePrompt, judgePlan, planFeedback, type StoryboardPlan } from './storyboard';
+import { SCENE_COUNT, SCENE_STALE_MS, SHOT_TYPES, buildPlanPrompt, buildScenePrompt, judgePlan, planFeedback, type ShotType, type StoryboardPlan } from './storyboard';
 
 type Db = SupabaseClient;
 type Row = Record<string, unknown>;
@@ -144,7 +144,9 @@ export async function generateScene(db: Db, p: { userId: string; masterKey: stri
   const photo = await download(db, str(board['reference_path']));
   if (!photo) return fail('Não consegui abrir a foto do produto deste storyboard. Descarte-o e crie outro.');
   const references: Uint8Array[] = [photo];
-  if (presenter && position > 0) {
+  // A person who speaks must look the same in every scene, so the first finished scene is a second reference. In POV only hands appear: they are described in the prompt, and a second reference would only make the scenes copy each other.
+  const pov = board['with_speech'] !== true;
+  if (presenter && position > 0 && !pov) {
     const { data: firstDone } = await db.from('storyboard_scenes').select('asset_id,position').eq('storyboard_id', storyboardId).eq('user_id', p.userId).eq('status', 'done').order('position', { ascending: true }).limit(1).maybeSingle();
     const firstAsset = str((firstDone as Row | null)?.['asset_id']);
     if (firstAsset) {
@@ -155,10 +157,11 @@ export async function generateScene(db: Db, p: { userId: string; masterKey: stri
   }
   const stored = board['plan'] && typeof board['plan'] === 'object' ? (board['plan'] as Row) : {};
   const slide = stored['kind'] === 'carousel' && Array.isArray(stored['slides']) ? ((stored['slides'] as Row[])[position] ?? null) : null;
-  const plan = { concept: str(board['concept']), presenter, scenes: [] } as unknown as StoryboardPlan;
+  const planned = Array.isArray(stored['scenes']) ? ((stored['scenes'] as Row[])[position] ?? {}) : {};
+  const camera = (SHOT_TYPES as readonly string[]).includes(str(planned['camera'])) ? (str(planned['camera']) as ShotType) : undefined;
   const prompt = slide
     ? buildCarouselImagePrompt({ theme: str(stored['theme']) }, slide as unknown as CarouselPlan['slides'][number], position)
-    : buildScenePrompt(plan, { title: str(scene['title']), shot: str(scene['shot']), motion: str(scene['motion']), speech: str(scene['speech']) || null, on_screen_text: str(scene['on_screen_text']) || null }, position, { samePersonReference: references.length > 1 });
+    : buildScenePrompt({ presenter }, { title: str(scene['title']), shot: str(scene['shot']), camera, action: str(planned['action']) || undefined }, position, { samePersonReference: references.length > 1, pov });
 
   let image;
   try {
