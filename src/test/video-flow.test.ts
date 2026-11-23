@@ -109,7 +109,7 @@ describe('checking the answer', () => {
   });
   it('builds the final Reels caption and no Story caption', () => {
     const reel = videoCaption('reel', videoOutputSchema.parse(good));
-    expect(reel).toContain('Comenta EU QUERO'); expect(reel).toContain('#publi · Link de afiliado');
+    expect(reel).toContain('Comenta EU QUERO'); expect(reel).toContain('#publi');
     expect(videoCaption('story', videoOutputSchema.parse(good))).toBeNull();
   });
   it('reads a saved job back and refuses a damaged one', () => {

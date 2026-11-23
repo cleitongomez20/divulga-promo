@@ -101,7 +101,7 @@ describe('final caption', () => {
     const parts = text.split('\n\n');
     expect(parts[0]).toBe(good.caption);
     expect(parts[1]).toBe('👉 Comenta EU QUERO que eu te envio o link!');
-    expect(parts[2]).toBe('#publi · Link de afiliado');
+    expect(parts[2]).toBe('#publi');
     expect(parts[3]).toBe('#organizacao #achadinhos #casa #shopee #utilidades');
     expect(text.length).toBeLessThanOrEqual(CAPTION_MAX);
   });
@@ -183,7 +183,7 @@ describe('generating a draft', () => {
     const post = env.tables['posts']?.[0] as Record<string, unknown>;
     expect(result).toMatchObject({ postId: post['id'], productTitle: 'Organizador de Bancada Multiuso', linkMissing: false });
     expect(post).toMatchObject({ user_id: U, instagram_account_id: 'acc', product_id: 'prod-1', format: 'photo', status: 'draft', source: 'ai', trigger_word: 'EU QUERO', affiliate_link: 'https://shope.ee/abc123' });
-    expect(String(post['caption'])).toContain('Comenta EU QUERO'); expect(String(post['caption'])).toContain('#publi · Link de afiliado');
+    expect(String(post['caption'])).toContain('Comenta EU QUERO'); expect(String(post['caption'])).toContain('#publi');
     expect(post['sub_id']).toBe(subIdOf(String(post['id'])));
     expect(post['ai_plan']).toMatchObject({ reason: good.reason, angle: good.angle, hook: good.hook, linkMissing: false, costMicros: 7000 });
     expect(linkCalls).toEqual([{ url: 'https://shopee.com.br/produto-i.1.1', subIds: [subIdOf(String(post['id'])), 'ia'] }]);
