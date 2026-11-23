@@ -31,7 +31,8 @@ export async function advanceVideoJobs(db: Db, p: { masterKey: string; fetcher?:
   const { data } = await db.from('posts').select('id,user_id,instagram_account_id,format,video_job,created_at,source,scheduled_at,ai_plan').eq('status', 'rendering').order('created_at', { ascending: true }).limit(10);
 
   // A storyboard draws images (a slow request each), so only one post at a time is moved forward in a visit.
-  let storyboardsHandled = 0;
+  // Drawing images is slow, so only one post draws per visit. A post that only waits (to order its video, or for Higgsfield) never takes that turn.
+  let drawingTaken = false;
   for (const row of (data ?? []) as Row[]) {
     result.checked++;
     const postId = str(row['id']); const userId = str(row['user_id']); const accountId = str(row['instagram_account_id']);
@@ -58,9 +59,9 @@ export async function advanceVideoJobs(db: Db, p: { masterKey: string; fetcher?:
     if (!job) { await fail('Não foi possível acompanhar este vídeo.', false); continue; }
     // Waiting for its storyboard: draw the next images, then order the video (or finish the carousel). Nothing is asked of the user.
     if (job.stage === 'storyboard') {
-      if (storyboardsHandled >= 1) { result.waiting++; continue; }
-      storyboardsHandled++;
-      const outcome = await advanceStoryStage(db, { post: row, job, masterKey: p.masterKey, fetcher, now });
+      const turn = { drew: false };
+      const outcome = await advanceStoryStage(db, { post: row, job, masterKey: p.masterKey, fetcher, now, drawing: !drawingTaken, state: turn });
+      if (turn.drew) drawingTaken = true;
       if (outcome.kind === 'wait') await wait(outcome.note);
       else if (outcome.kind === 'fail') await fail(outcome.message, false);
       else if (outcome.kind === 'ordered') result.waiting++;
@@ -103,7 +104,7 @@ export async function advanceVideoJobs(db: Db, p: { masterKey: string; fetcher?:
         result.waiting++;
         continue;
       }
-      await fail(state === 'failed' ? `O Higgsfield não conseguiu gerar o vídeo com ${label}. Tente de novo.` : `O Higgsfield bloqueou este vídeo por conteúdo (${label}). Tente de novo com outro produto.`, true, { tool: job.tool, higgsfield_status: answer });
+      await fail(state === 'failed' ? (/credit|balance|insufficient|saldo/i.test(answer) ? `O Higgsfield está sem saldo de créditos para este vídeo (${label}). Adicione créditos no Console do Higgsfield e tente de novo.` : `O Higgsfield não conseguiu gerar o vídeo com ${label}. Tente de novo.`) : `O Higgsfield bloqueou este vídeo por conteúdo (${label}). Tente de novo com outro produto.`, true, { tool: job.tool, higgsfield_status: answer });
       continue;
     }
     if (state === 'canceled') { await fail('O pedido do vídeo foi cancelado.', true); continue; }
