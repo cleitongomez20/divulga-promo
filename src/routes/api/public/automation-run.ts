@@ -21,7 +21,10 @@ async function handle(request: Request) {
     const { runAutomation } = await import('@/lib/automation.server');
     const { makeLinkFor } = await import('@/lib/shopee-link.server');
     const counts = await runAutomation(supabaseAdmin as never, { masterKey, makeLinkFor: userId => makeLinkFor(supabaseAdmin, supabaseAdmin as never, userId) });
-    return Response.json({ ok: true, counts }, { headers: { 'Cache-Control': 'no-store' } });
+    // The private replies to comments that could not go out right away are retried on this visit too (the webhook sends them at once when it can).
+    let replies: unknown = null;
+    try { const { sendPending } = await import('@/lib/comment-reply.server'); replies = await sendPending(supabaseAdmin as never, { masterKey, limit: 5 }); } catch { replies = null; }
+    return Response.json({ ok: true, counts, replies }, { headers: { 'Cache-Control': 'no-store' } });
   } catch {
     return Response.json({ ok: false }, { status: 500, headers: { 'Cache-Control': 'no-store' } });
   }
