@@ -22,6 +22,7 @@ import { Route as AuthenticatedProdutosRouteImport } from './routes/_authenticat
 import { Route as AuthenticatedPublicacoesRouteImport } from './routes/_authenticated/publicacoes'
 import { Route as ApiPublicAutomationRunRouteImport } from './routes/api/public/automation-run'
 import { Route as ApiPublicInstagramCallbackRouteImport } from './routes/api/public/instagram-callback'
+import { Route as ApiPublicMetaWebhookRouteImport } from './routes/api/public/meta-webhook'
 import { Route as ApiPublicPublishDueRouteImport } from './routes/api/public/publish-due'
 import { Route as ApiPublicShopeeSyncRouteImport } from './routes/api/public/shopee-sync'
 
@@ -92,6 +93,11 @@ const ApiPublicInstagramCallbackRoute =
     path: '/api/public/instagram-callback',
     getParentRoute: () => rootRouteImport,
   } as any)
+const ApiPublicMetaWebhookRoute = ApiPublicMetaWebhookRouteImport.update({
+  id: '/api/public/meta-webhook',
+  path: '/api/public/meta-webhook',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiPublicPublishDueRoute = ApiPublicPublishDueRouteImport.update({
   id: '/api/public/publish-due',
   path: '/api/public/publish-due',
@@ -116,6 +122,7 @@ export interface FileRoutesByFullPath {
   '/publicacoes': typeof AuthenticatedPublicacoesRoute
   '/api/public/automation-run': typeof ApiPublicAutomationRunRoute
   '/api/public/instagram-callback': typeof ApiPublicInstagramCallbackRoute
+  '/api/public/meta-webhook': typeof ApiPublicMetaWebhookRoute
   '/api/public/publish-due': typeof ApiPublicPublishDueRoute
   '/api/public/shopee-sync': typeof ApiPublicShopeeSyncRoute
 }
@@ -132,6 +139,7 @@ export interface FileRoutesByTo {
   '/publicacoes': typeof AuthenticatedPublicacoesRoute
   '/api/public/automation-run': typeof ApiPublicAutomationRunRoute
   '/api/public/instagram-callback': typeof ApiPublicInstagramCallbackRoute
+  '/api/public/meta-webhook': typeof ApiPublicMetaWebhookRoute
   '/api/public/publish-due': typeof ApiPublicPublishDueRoute
   '/api/public/shopee-sync': typeof ApiPublicShopeeSyncRoute
 }
@@ -150,6 +158,7 @@ export interface FileRoutesById {
   '/_authenticated/publicacoes': typeof AuthenticatedPublicacoesRoute
   '/api/public/automation-run': typeof ApiPublicAutomationRunRoute
   '/api/public/instagram-callback': typeof ApiPublicInstagramCallbackRoute
+  '/api/public/meta-webhook': typeof ApiPublicMetaWebhookRoute
   '/api/public/publish-due': typeof ApiPublicPublishDueRoute
   '/api/public/shopee-sync': typeof ApiPublicShopeeSyncRoute
 }
@@ -168,6 +177,7 @@ export interface FileRouteTypes {
     | '/publicacoes'
     | '/api/public/automation-run'
     | '/api/public/instagram-callback'
+    | '/api/public/meta-webhook'
     | '/api/public/publish-due'
     | '/api/public/shopee-sync'
   fileRoutesByTo: FileRoutesByTo
@@ -184,6 +194,7 @@ export interface FileRouteTypes {
     | '/publicacoes'
     | '/api/public/automation-run'
     | '/api/public/instagram-callback'
+    | '/api/public/meta-webhook'
     | '/api/public/publish-due'
     | '/api/public/shopee-sync'
   id:
@@ -201,6 +212,7 @@ export interface FileRouteTypes {
     | '/_authenticated/publicacoes'
     | '/api/public/automation-run'
     | '/api/public/instagram-callback'
+    | '/api/public/meta-webhook'
     | '/api/public/publish-due'
     | '/api/public/shopee-sync'
   fileRoutesById: FileRoutesById
@@ -213,6 +225,7 @@ export interface RootRouteChildren {
   ResetPasswordRoute: typeof ResetPasswordRoute
   ApiPublicAutomationRunRoute: typeof ApiPublicAutomationRunRoute
   ApiPublicInstagramCallbackRoute: typeof ApiPublicInstagramCallbackRoute
+  ApiPublicMetaWebhookRoute: typeof ApiPublicMetaWebhookRoute
   ApiPublicPublishDueRoute: typeof ApiPublicPublishDueRoute
   ApiPublicShopeeSyncRoute: typeof ApiPublicShopeeSyncRoute
 }
@@ -310,6 +323,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiPublicInstagramCallbackRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/public/meta-webhook': {
+      id: '/api/public/meta-webhook'
+      path: '/api/public/meta-webhook'
+      fullPath: '/api/public/meta-webhook'
+      preLoaderRoute: typeof ApiPublicMetaWebhookRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/public/publish-due': {
       id: '/api/public/publish-due'
       path: '/api/public/publish-due'
@@ -356,6 +376,7 @@ const rootRouteChildren: RootRouteChildren = {
   ResetPasswordRoute: ResetPasswordRoute,
   ApiPublicAutomationRunRoute: ApiPublicAutomationRunRoute,
   ApiPublicInstagramCallbackRoute: ApiPublicInstagramCallbackRoute,
+  ApiPublicMetaWebhookRoute: ApiPublicMetaWebhookRoute,
   ApiPublicPublishDueRoute: ApiPublicPublishDueRoute,
   ApiPublicShopeeSyncRoute: ApiPublicShopeeSyncRoute,
 }
