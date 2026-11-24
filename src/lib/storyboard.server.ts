@@ -101,7 +101,7 @@ export async function planStoryboard(db: Db, p: {
     : (slides as CarouselPlan).slides.map((slide, index) => ({ position: index, title: slide.title, shot: slide.shot, motion: '', speech: null, on_screen_text: slide.headline }));
   const scenes = await db.from('storyboard_scenes').insert(rows.map(row => ({ id: crypto.randomUUID(), user_id: p.userId, storyboard_id: storyboardId, ...row, status: 'pending' })));
   if (scenes.error) { await undo(); throw new BrainError('Não foi possível salvar as cenas. Tente de novo.'); }
-  await db.from('activity_log').insert({ user_id: p.userId, action: 'Storyboard planejado', result: `Produto "${title.slice(0, 80)}", ${SCENE_COUNT} ${carousel ? 'slides com texto na imagem' : `cenas${p.withSpeech ? ' com fala' : ' sem fala'}`}`, details: { storyboard_id: storyboardId, product_id: p.productId, cost_micros: costMicros } });
+  await db.from('activity_log').insert({ user_id: p.userId, action: 'Storyboard planejado', result: `Produto "${title.slice(0, 80)}", ${SCENE_COUNT} ${carousel ? 'slides com texto na imagem' : `cenas${p.withSpeech ? ' com fala' : ' com narração em off'}`}`, details: { storyboard_id: storyboardId, product_id: p.productId, cost_micros: costMicros } });
   return { storyboardId, costMicros };
 }
 

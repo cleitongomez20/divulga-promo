@@ -2,6 +2,12 @@ import { z } from 'zod';
 import { TRIGGER_WORD, checkCaption, extractJson } from './content-brain';
 
 export const SCENE_COUNT = 6;
+/** The narration of a POV video: the shortest line a scene may have (a share of the longest), and the shortest one of the last scene, which is a short closing line. */
+export const NARRATION_MIN_SHARE = 0.6;
+export const NARRATION_LAST_MIN_WORDS = 2;
+export const narrationMinWords = (maxWords: number) => Math.max(2, Math.floor(maxWords * NARRATION_MIN_SHARE));
+/** The narration never sends people to comment or to the bio: the only call to action is the text on the screen. */
+export const COMMENT_CALL = /\bcoment(a|e|ar|em|ando)\b/i;
 /** A scene stuck in "generating" for longer than this is taken as abandoned and may be generated again. */
 export const SCENE_STALE_MS = 5 * 60_000;
 /** The call to action of every post: the same words the caption ends with. Nothing else ("link na bio" and the like) is accepted. */
@@ -62,9 +68,12 @@ export function buildPlanPrompt(product: PlanProduct, options: { withSpeech: boo
       'Permitido na fala: "olha o que eu encontrei", "achei super prático", "olha esse detalhe". Proibido: dizer que comprou, usou, testou ou amou o produto, contar resultado ou depoimento, citar preço, desconto, porcentagem, número de vendas, urgência ou escassez.',
     ]
     : [
-      'Formato POV: a câmera é a primeira pessoa e aparecem SOMENTE AS MÃOS de uma pessoa, nunca rosto nem corpo. A dinâmica é entre as mãos e o produto.',
+      'Formato POV com narração em off: a câmera é a primeira pessoa e aparecem SOMENTE AS MÃOS de uma pessoa, nunca rosto nem corpo. A dinâmica é entre as mãos e o produto. Uma voz feminina, fora de quadro, narra o vídeo inteiro: todo vídeo tem narração.',
       'Descreva em "presenter" as mãos, uma única vez, em uma frase (tom de pele, unhas, anel ou pulseira se houver), para que sejam as mesmas em todas as cenas.',
-      'O vídeo não tem fala: todos os "speech" são null.',
+      `Em cada cena, "speech" é a narração daquele trecho, em português do Brasil, de ${narrationMinWords(maxWords)} a ${maxWords} palavras (na última cena, de ${NARRATION_LAST_MIN_WORDS} a ${maxWords}). A cena é curta: uma ou duas frases curtas e simples, de palavras comuns, ditas com clareza, no ritmo de uma vendedora animada e simpática.`,
+      'Função da narração em cada cena: 1) gancho: uma pergunta direta a quem assiste, ligada à situação que a pessoa deseja; 2) o que é o produto e o que ele faz ou o que vem junto; 3) destaque: comece com "Olha esse…", "Olha essa…" ou "Repara…" e leve o olhar a UM detalhe que aparece na cena; 4) o uso em andamento ou outro detalhe que aparece na cena; 5) para quem o produto é, ou um dado prático que esteja no título do produto; 6) fecho curto e carinhoso, que não é chamada para ação.',
+      'Fale direto com a pessoa ("você", "gente"). Dado concreto antes de adjetivo, no máximo um adjetivo de emoção por frase. Use diminutivos (roupinha, lacinhos) só quando o produto for infantil ou delicado.',
+      'Narre somente o que aparece na cena e o que está no título do produto: nada de medida, material ou função inventados. Permitido na narração: "olha o que eu encontrei", "olha esse detalhe". Proibido: dizer que comprou, usou, testou ou amou o produto, contar resultado ou depoimento, citar preço, desconto, porcentagem, número de vendas, urgência ou escassez. Nunca chame para comentar nem mande ir à bio: a chamada é só o texto na tela.',
     ];
   const system = [
     'Você planeja o storyboard de um Reels publicitário vertical (9:16) de 30 segundos para um produto da Shopee divulgado por link de afiliado.',
@@ -129,9 +138,17 @@ export function judgePlan(text: string, options: { withSpeech: boolean; maxSpeec
       if (options.maxSpeechWords !== undefined && words > options.maxSpeechWords) problems.push(`a fala da cena ${index + 1} tem ${words} palavras, e o máximo é ${options.maxSpeechWords}`);
     });
   } else {
-    // POV: only the hands appear, and nobody speaks.
+    // POV: only the hands appear, and an off-screen voice narrates every scene. A video never goes without audio.
     if (!plan.presenter) problems.push('falta descrever as mãos em "presenter"');
-    plan.scenes.forEach((scene, index) => { if (scene.speech) problems.push(`a cena ${index + 1} tem fala, mas o vídeo POV não tem fala`); });
+    const maxWords = options.maxSpeechWords ?? 12;
+    plan.scenes.forEach((scene, index) => {
+      if (!scene.speech) { problems.push(`a cena ${index + 1} está sem narração`); return; }
+      const words = scene.speech.trim().split(/\s+/).length;
+      const minWords = index === SCENE_COUNT - 1 ? NARRATION_LAST_MIN_WORDS : narrationMinWords(maxWords);
+      if (words > maxWords) problems.push(`a narração da cena ${index + 1} tem ${words} palavras, e o máximo é ${maxWords}`);
+      if (words < minWords) problems.push(`a narração da cena ${index + 1} tem só ${words} palavras, e o mínimo é ${minWords}`);
+      if (COMMENT_CALL.test(scene.speech)) problems.push(`a narração da cena ${index + 1} chama para comentar; a chamada é só o texto na tela`);
+    });
   }
   // The call to action is always the comment word, set by the code: the AI is told, but the result does not depend on it.
   const last = plan.scenes[SCENE_COUNT - 1] as StoryboardScenePlan;

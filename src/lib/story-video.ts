@@ -21,6 +21,16 @@ export const STORY_VIDEO_STUCK_MS = 45 * 60_000;
 export function maxSpeechWords(tool: StoryToolId, seconds: number): number {
   return VIDEO_TOOLS[tool].mode === 'reference' ? Math.max(3, Math.floor((seconds / SCENE_COUNT) * 2.2)) : Math.max(4, Math.floor(seconds * 2));
 }
+/**
+ * The pace of the narration of a POV video, in words per second. It starts below the pace of a lively seller (about 3.5 words a second) because a video model
+ * that is given more garbles the speech (real test of 12/11). Raise it a little at a time, listening to the result of each step.
+ */
+export const NARRATION_WORDS_PER_SECOND = 2.4;
+export function narrationMaxWords(tool: StoryToolId, seconds: number): number {
+  return VIDEO_TOOLS[tool].mode === 'reference' ? Math.max(4, Math.floor((seconds / SCENE_COUNT) * NARRATION_WORDS_PER_SECOND)) : Math.max(4, Math.floor(seconds * 2));
+}
+/** How the narrator sounds and behaves. Written once, in English like the rest of the video prompt; the lines themselves stay in Brazilian Portuguese. */
+export const NARRATOR_STYLE = 'A single young Brazilian woman narrates the whole video as an off-screen voice-over, in Brazilian Portuguese: friendly and excited, close to the microphone, natural social-media seller pace, clear pronunciation, a smile in the voice, the same voice in every scene. The narrator is never seen and nobody speaks on camera. Each narration line is said during its own scene.';
 /** A scene that failed this many times ends the post. */
 export const MAX_SCENE_TRIES = 3;
 /** The first scene is drawn alone (the next ones copy its person), then up to this many at once, so one visit of the scheduler stays short. */
@@ -52,7 +62,7 @@ export function buildStoryDirectionPrompt(format: VideoFormat, candidates: reado
   const system = [
     'Você é o diretor de conteúdo de uma conta brasileira de Instagram que indica produtos da Shopee como afiliada.',
     `Sua tarefa: escolher UM produto da lista, escolher a ferramenta de vídeo e escrever a legenda de ${format === 'reel' ? 'um Reels' : 'um Story'} vertical (9:16).`,
-    `O vídeo é montado a partir de um storyboard de 6 cenas com imagens feitas a partir da foto real do produto. ${options.withSpeech ? 'Um personagem fala nas cenas.' : 'O vídeo é em formato POV: só as mãos aparecem, sem rosto e sem fala.'}`,
+    `O vídeo é montado a partir de um storyboard de 6 cenas com imagens feitas a partir da foto real do produto. ${options.withSpeech ? 'Um personagem fala nas cenas.' : 'O vídeo é em formato POV: só as mãos aparecem, sem rosto, e uma voz feminina fora de quadro narra as cenas.'}`,
     '',
     'Ferramentas de vídeo disponíveis:',
     catalog,
@@ -108,17 +118,20 @@ const imageRef = (tool: StoryToolId, index: number) => (tool === 'cinema_studio_
 export function buildStoryVideoPrompt(tool: StoryToolId, p: { scenes: readonly StoryScene[]; presenter: string | null; seconds: number; withSpeech: boolean }): string {
   // Without speech the video is in POV: the camera is the person's eyes and only the hands appear.
   const pov = !p.withSpeech && p.presenter !== null;
+  // A POV storyboard made before the narration existed has no lines to say: it stays silent instead of letting the model invent sound.
+  const narrated = !p.withSpeech && p.scenes.some(scene => Boolean(scene.speech));
   if (VIDEO_TOOLS[tool].mode === 'frame') {
     const first = p.scenes[0];
     return clip([
       `Vertical advertising shot that starts from the given image. ${first ? `${first.shot}. ${first.motion}.` : ''}`,
       'Keep the product exactly as in the image: same shape, color and labels. Smooth, natural motion. No text, captions, logos or watermarks.',
-      p.withSpeech && first?.speech ? `The presenter says in Brazilian Portuguese, slowly and very clearly, in a natural friendly voice: "${first.speech}"` : 'No speech.',
+      p.withSpeech && first?.speech ? `The presenter says in Brazilian Portuguese, slowly and very clearly, in a natural friendly voice: "${first.speech}"` : narrated && first?.speech ? `${NARRATOR_STYLE} The narration is: "${first.speech}" No background music.` : 'No speech.',
     ].join(' '), 1500);
   }
   const each = Math.max(1, Math.round(p.seconds / Math.max(1, p.scenes.length)));
   const lines = p.scenes.map((scene, index) => {
-    const speech = p.withSpeech && scene.speech ? ` The presenter says in Brazilian Portuguese, slowly and very clearly, in a natural friendly voice: "${scene.speech}"` : '';
+    const speech = p.withSpeech && scene.speech ? ` The presenter says in Brazilian Portuguese, slowly and very clearly, in a natural friendly voice: "${scene.speech}"`
+      : narrated && scene.speech ? ` Off-screen narrator says, in Brazilian Portuguese: "${scene.speech}"` : '';
     const action = scene.action ? `${clip(scene.action, 120)}. ` : '';
     const camera = scene.camera ? ` Shot: ${SHOT_LABELS_EN[scene.camera]}.` : '';
     return `Scene ${index + 1} (${imageRef(tool, index + 1)}, about ${each} seconds): ${action}${clip(scene.shot, 200)}${camera} Camera and motion: ${clip(scene.motion, 140)}.${speech}`;
@@ -128,15 +141,16 @@ export function buildStoryVideoPrompt(tool: StoryToolId, p: { scenes: readonly S
     'Keep the product exactly as shown in the images: same shape, color and labels. Natural, realistic motion and smooth cuts between scenes.',
     p.presenter && p.withSpeech ? `The same presenter appears in the scenes: ${clip(p.presenter, 200)}.` : '',
     pov ? `First-person POV video: the camera is the viewer's eyes and ONLY the hands of the person are visible, never a face or body. The same hands in every scene: ${clip(p.presenter as string, 200)}.` : '',
+    narrated ? NARRATOR_STYLE : '',
     'Every scene is a different moment of one story, with a different camera angle and a different action, following the order of the images.',
     ...lines,
-    `No text, captions, logos or watermarks in the video.${p.withSpeech ? '' : ' No speech.'}`,
+    `No text, captions, logos or watermarks in the video.${p.withSpeech ? '' : narrated ? ' No background music.' : ' No speech.'}`,
   ].filter(Boolean).join('\n');
 }
 
 /** The request body for the chosen tool, exactly as the Higgsfield documentation lists the parameters. Always 9:16, 720p. */
-export function buildStoryBody(tool: StoryToolId, p: { prompt: string; imageUrls: readonly string[]; duration: number; withSpeech: boolean }): Record<string, unknown> {
-  const common = { prompt: p.prompt, duration: p.duration, aspect_ratio: '9:16', resolution: '720p', generate_audio: p.withSpeech };
+export function buildStoryBody(tool: StoryToolId, p: { prompt: string; imageUrls: readonly string[]; duration: number; withSpeech: boolean; narrated?: boolean }): Record<string, unknown> {
+  const common = { prompt: p.prompt, duration: p.duration, aspect_ratio: '9:16', resolution: '720p', generate_audio: p.withSpeech || p.narrated === true };
   if (tool === 'ltx_2_5') return { ...common, image_url: p.imageUrls[0] };
   // Wan 3.0 takes up to 10 reference images; Seedance 2.5 and Cinema Studio 4.0 take up to 30. The storyboard has 6.
   return { ...common, image_urls: p.imageUrls.slice(0, 10) };

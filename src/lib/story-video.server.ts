@@ -14,7 +14,7 @@ import type { AutomationMode } from './automation';
 import { MEDIA_BUCKET } from './posts';
 import { encodeSubIds } from './products';
 import {
-  MAX_SCENE_TRIES, MAX_SCENES_PER_VISIT, STORYBOARD_STUCK_MS, STORY_TOOL_IDS, buildStoryBody, maxSpeechWords, nextFallbackTool, buildStoryDirectionPrompt, buildStoryVideoPrompt, judgeStoryDirection,
+  MAX_SCENE_TRIES, MAX_SCENES_PER_VISIT, STORYBOARD_STUCK_MS, STORY_TOOL_IDS, buildStoryBody, maxSpeechWords, narrationMaxWords, nextFallbackTool, buildStoryDirectionPrompt, buildStoryVideoPrompt, judgeStoryDirection,
   type StoryToolId,
 } from './story-video';
 import { generateScene, planStoryboard } from './storyboard.server';
@@ -82,7 +82,7 @@ export async function startStoryContent(db: Db, p: {
   // The speech of each scene is limited by the length of the video: a longer line is rushed and comes out garbled.
   const planned = await planStoryboard(db, {
     userId: p.userId, masterKey: p.masterKey, productId: product.id, withSpeech, fetcher, now, kind: carousel ? 'carousel' : 'video',
-    ...(direction.tool ? { maxSpeechWords: maxSpeechWords(direction.tool, direction.duration) } : {}),
+    ...(direction.tool ? { maxSpeechWords: (withSpeech ? maxSpeechWords : narrationMaxWords)(direction.tool, direction.duration) } : {}),
   });
   aiMicros += planned.costMicros;
 
@@ -192,6 +192,8 @@ export async function advanceStoryStage(db: Db, p: {
   const { data: board } = await db.from('storyboards').select('presenter,plan').eq('id', job.storyboardId).eq('user_id', userId).maybeSingle();
   const planned = (board as Row | null)?.['plan'] && typeof (board as Row)['plan'] === 'object' && Array.isArray(((board as Row)['plan'] as Row)['scenes']) ? (((board as Row)['plan'] as Row)['scenes'] as Row[]) : [];
   const withSpeech = job.withSpeech === true;
+  // A POV video is narrated: its audio is on whenever the storyboard has narration lines (storyboards made before the narration existed stay silent).
+  const narrated = !withSpeech && scenes.some(scene => str(scene['speech']) !== '');
   const videoPrompt = buildStoryVideoPrompt(toolId, {
     scenes: scenes.map((scene, index) => {
       const extra = planned[index] ?? {};
@@ -203,7 +205,7 @@ export async function advanceStoryStage(db: Db, p: {
   const imageUrls = assetIds.map(id => db.storage.from(MEDIA_BUCKET).getPublicUrl(pathOf.get(id) as string).data.publicUrl);
   try {
     // The idempotency key is the post and the tool: if this step is repeated, Higgsfield returns the same request instead of making (and charging) a second video; another tool gets a new key.
-    const res = await hfCall(fetcher, credentials, { method: 'POST', path: `/${tool.endpoint}`, body: buildStoryBody(toolId, { prompt: videoPrompt, imageUrls, duration: job.duration, withSpeech }), idempotencyKey: `${postId}:${toolId}`, timeoutMs: 30_000 });
+    const res = await hfCall(fetcher, credentials, { method: 'POST', path: `/${tool.endpoint}`, body: buildStoryBody(toolId, { prompt: videoPrompt, imageUrls, duration: job.duration, withSpeech, narrated }), idempotencyKey: `${postId}:${toolId}`, timeoutMs: 30_000 });
     if (res.status === 401) { await markInvalid(db, userId); throw new HiggsfieldError('auth'); }
     const requestId = str(res.json?.['request_id']);
     if (res.status < 200 || res.status >= 300 || !requestId) throw errorForStatus(res.status, str(res.json?.['detail']), res.retryAfter);
