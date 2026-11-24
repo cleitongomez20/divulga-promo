@@ -4,7 +4,7 @@ import { OPENAI_IMAGE_EDITS_URL, OPENAI_URL, connectOpenAiKey } from '@/lib/open
 import { switchProvider } from '@/lib/ai.server';
 import { sealJson } from '@/lib/secret-box.server';
 import {
-  STORY_SECONDS, STORY_TOOL_IDS, maxSpeechWords, buildStoryBody, buildStoryDirectionPrompt, buildStoryVideoPrompt, judgeStoryDirection, type StoryScene,
+  NARRATOR_STYLE, STORY_SECONDS, STORY_TOOL_IDS, maxSpeechWords, narrationMaxWords, buildStoryBody, buildStoryDirectionPrompt, buildStoryVideoPrompt, judgeStoryDirection, type StoryScene,
 } from '@/lib/story-video';
 import { startStoryContent } from '@/lib/story-video.server';
 import { startVideoDraft } from '@/lib/video-brain.server';
@@ -55,7 +55,7 @@ describe('the storyboard video tools', () => {
     for (const id of STORY_TOOL_IDS) expect(withSpeech.system).toContain(id);
     expect(withSpeech.system).toMatch(/de 4 a 30 segundos/); expect(withSpeech.system).toMatch(/Um personagem fala/); expect(withSpeech.system).not.toContain('kling');
     expect(withSpeech.system).toMatch(/Nunca escreva preço/); expect(withSpeech.user).toContain('prod-1');
-    expect(buildStoryDirectionPrompt('story', [candidate], { withSpeech: false }).system).toMatch(/formato POV: só as mãos aparecem, sem rosto e sem fala/);
+    expect(buildStoryDirectionPrompt('story', [candidate], { withSpeech: false }).system).toMatch(/formato POV: só as mãos aparecem, sem rosto, e uma voz feminina fora de quadro narra/);
   });
 });
 
@@ -97,11 +97,22 @@ describe('the video prompt and the request body', () => {
     const prompt = buildStoryVideoPrompt('cinema_studio_4', { scenes: sceneList(true), presenter: null, seconds: 30, withSpeech: true });
     expect(prompt).toContain('<<<image_1>>>'); expect(prompt).toContain('<<<image_6>>>'); expect(prompt).not.toContain('Image 1');
   });
-  it('without speech the video is silent and no line is said', () => {
+  it('a POV storyboard made before the narration existed has no lines to say, so it stays silent', () => {
     const prompt = buildStoryVideoPrompt('wan_3_0', { scenes: sceneList(false), presenter: null, seconds: 30, withSpeech: false });
-    expect(prompt).toContain('No speech.'); expect(prompt).not.toContain('Brazilian Portuguese'); expect(prompt).not.toContain('presenter');
-    const spoken = buildStoryVideoPrompt('wan_3_0', { scenes: sceneList(true), presenter: 'Pessoa', seconds: 30, withSpeech: false });
-    expect(spoken).not.toContain('Olha esse detalhe');
+    expect(prompt).toContain('No speech.'); expect(prompt).not.toContain('Brazilian Portuguese'); expect(prompt).not.toContain('presenter'); expect(prompt).not.toContain('voice-over');
+  });
+  it('a POV video is narrated: an off-screen voice says the line of each scene, with no music and no one on camera', () => {
+    const prompt = buildStoryVideoPrompt('seedance_2_5', { scenes: sceneList(true), presenter: 'Mãos de mulher adulta, pele clara', seconds: 30, withSpeech: false });
+    expect(prompt).toContain(NARRATOR_STYLE); expect(prompt).toContain('off-screen voice-over'); expect(prompt).toContain('Brazilian Portuguese'); expect(prompt).toContain('nobody speaks on camera');
+    for (let i = 1; i <= SCENE_COUNT; i++) expect(prompt).toContain(`Off-screen narrator says, in Brazilian Portuguese: "Olha esse detalhe ${i}"`);
+    expect(prompt).toContain('First-person POV video'); expect(prompt).toContain('No background music.'); expect(prompt).not.toContain('No speech.'); expect(prompt).not.toContain('The presenter says');
+    const short = buildStoryVideoPrompt('ltx_2_5', { scenes: sceneList(true), presenter: 'Mãos', seconds: 10, withSpeech: false });
+    expect(short).toContain('Olha esse detalhe 1'); expect(short).not.toContain('Olha esse detalhe 2'); expect(short).toContain('No background music.');
+  });
+  it('the audio of the order is on for a character and for a narrated POV video, and off only for a storyboard without lines', () => {
+    const body = (p: { withSpeech: boolean; narrated?: boolean }) => buildStoryBody('seedance_2_5', { prompt: 'x', imageUrls: ['a'], duration: 30, ...p });
+    expect(body({ withSpeech: true })).toMatchObject({ generate_audio: true }); expect(body({ withSpeech: false, narrated: true })).toMatchObject({ generate_audio: true });
+    expect(body({ withSpeech: false })).toMatchObject({ generate_audio: false });
   });
   it('POV: the camera is the viewer, only the hands appear, and every scene is a different moment with its own camera', () => {
     const prompt = buildStoryVideoPrompt('seedance_2_5', { scenes: sceneList(false), presenter: 'Mãos de mulher adulta, pele clara', seconds: 30, withSpeech: false });
@@ -129,7 +140,7 @@ const imageOk = () => ({ data: [{ b64_json: IMAGE_B64 }], usage: { input_tokens:
 const textReply = (text: string) => ({ json: { status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text }] }], usage: { input_tokens: 400, output_tokens: 900 } } });
 const planJson = (speech: boolean) => JSON.stringify({
   concept: 'Mostrar o organizador no dia a dia', presenter: speech ? 'Mulher de 30 anos, cabelo castanho preso, camiseta branca' : 'Mãos de mulher adulta, pele clara, unhas curtas com esmalte nude',
-  scenes: Array.from({ length: SCENE_COUNT }, (_, i) => ({ title: `Cena ${i + 1}`, camera: CAMERAS[i], action: `Ação ${i + 1}: as mãos fazem algo diferente`, shot: SHOTS[i], motion: 'câmera se aproxima devagar', speech: speech ? `Olha esse detalhe ${i + 1}` : null, on_screen_text: null })),
+  scenes: Array.from({ length: SCENE_COUNT }, (_, i) => ({ title: `Cena ${i + 1}`, camera: CAMERAS[i], action: `Ação ${i + 1}: as mãos fazem algo diferente`, shot: SHOTS[i], motion: 'câmera se aproxima devagar', speech: speech ? `Olha esse detalhe ${i + 1}` : `Olha esse detalhe que deixa tudo mais organizado, cena ${i + 1}`, on_screen_text: null })),
 });
 const carouselPlanJson = () => JSON.stringify({
   concept: 'Mostrar como o organizador deixa a bancada em ordem', theme: 'cozinha clara e aconchegante, tons de madeira e branco, luz natural',
@@ -216,13 +227,14 @@ describe('starting a Reels with the storyboard', () => {
     await start(w, 'reel', { auto: { mode: 'approval', scheduledAt: new Date(NOW).toISOString() } });
     expect(post(w)).toMatchObject({ source: 'auto' });
   });
-  it('without the speech option the video is POV: only hands, no speech and no audio', async () => {
+  it('without the speech option the video is POV: only hands, narrated by an off-screen voice, with the audio on', async () => {
     for (const speech of [false, 'default'] as const) {
       const w = await world({ speech });
       await start(w, 'reel');
       expect(post(w)['video_job']).toMatchObject({ withSpeech: false });
       expect(String((w.tables['storyboards']?.[0] as Record<string, unknown>)['presenter'])).toContain('Mãos');
       expect((w.tables['storyboards']?.[0] as Record<string, unknown>)['with_speech']).toBe(false);
+      for (const row of w.tables['storyboard_scenes'] as Record<string, unknown>[]) expect(String(row['speech'])).toMatch(/^Olha esse detalhe/);
     }
   });
   it('the scenes tell a story with a different camera each, and the last one carries the comment call', async () => {
@@ -430,6 +442,22 @@ describe('the speech of each scene follows the length of the video', () => {
   });
   it('the video prompt asks for slow and clear speech', () => {
     expect(buildStoryVideoPrompt('wan_3_0', { scenes: sceneList(true), presenter: 'Pessoa', seconds: 15, withSpeech: true })).toContain('slowly and very clearly');
+  });
+});
+
+describe('the narration of the POV video follows the length of the video', () => {
+  it('starts at 2.4 words a second, spread over the six scenes', () => {
+    expect(narrationMaxWords('seedance_2_5', 30)).toBe(12); expect(narrationMaxWords('wan_3_0', 15)).toBe(6); expect(narrationMaxWords('cinema_studio_4', 6)).toBe(4); expect(narrationMaxWords('ltx_2_5', 10)).toBe(20);
+  });
+  it('tells the AI the limit and the function of each scene, and sends it back when a line is too long', async () => {
+    const long = JSON.parse(planJson(false)) as { scenes: { speech: string }[] };
+    long.scenes[2]!.speech = 'Olha esse detalhe incrível que organiza tudo na sua bancada de um jeito lindo e prático';
+    const w = await world({ speech: false, texts: [direction({ tool: 'seedance_2_5', duration: 30 }), JSON.stringify(long), planJson(false)] });
+    await start(w, 'reel');
+    const body = JSON.parse(String(w.r.to(OPENAI_URL)[1]?.init.body)) as { instructions: string };
+    expect(body.instructions).toContain('de 7 a 12 palavras'); expect(body.instructions).toContain('narração em off'); expect(body.instructions).toContain('gancho');
+    const retry = JSON.parse(String(w.r.to(OPENAI_URL)[2]?.init.body)) as { input: { content: string }[] };
+    expect(retry.input.at(-1)?.content).toMatch(/a narração da cena 3 tem 16 palavras, e o máximo é 12/);
   });
 });
 

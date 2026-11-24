@@ -23,6 +23,9 @@ const SHOTS = [
 ];
 const HANDS = 'Mãos de mulher adulta, pele clara, unhas curtas com esmalte nude';
 const scene = (n: number, extra: Record<string, unknown> = {}) => ({ title: `Cena ${n}`, camera: CAMERAS[n - 1], action: `Ação ${n}: as mãos fazem algo diferente`, shot: SHOTS[n - 1], motion: 'câmera se aproxima devagar', speech: `Olha esse detalhe ${n}`, on_screen_text: null, ...extra });
+/** A good POV narration line (10 words): between the shortest and the longest a 5-second scene may have. */
+const NARRATION = (n: number) => `Olha esse detalhe que deixa tudo mais organizado, cena ${n}`;
+const NARRATION_SCENE = (n: number) => ({ speech: NARRATION(n) });
 const planJson = (overrides: Record<string, unknown> = {}, perScene: (n: number) => Record<string, unknown> = () => ({})) => JSON.stringify({
   concept: 'Mostrar o fone no dia a dia', presenter: 'Mulher de 30 anos, cabelo castanho preso, camiseta branca',
   scenes: Array.from({ length: SCENE_COUNT }, (_, i) => scene(i + 1, perScene(i + 1))), ...overrides,
@@ -40,7 +43,9 @@ describe('storyboard plan rules', () => {
     expect(withSpeech.system).toMatch(/personagem que fala/); expect(withSpeech.system).toMatch(/Proibido: dizer que comprou, usou/);
     expect(withSpeech.user).toContain('Fone Bluetooth');
     const silent = buildPlanPrompt({ title: 'Fone' }, { withSpeech: false });
-    expect(silent.system).toMatch(/não tem fala/); expect(silent.system).not.toMatch(/personagem que fala/);
+    expect(silent.system).toMatch(/narração em off/); expect(silent.system).toMatch(/todo vídeo tem narração/); expect(silent.system).not.toMatch(/personagem que fala/); expect(silent.system).not.toMatch(/não tem fala/);
+    expect(silent.system).toMatch(/de 7 a 12 palavras/); expect(silent.system).toMatch(/Olha esse…/); expect(silent.system).toMatch(/a chamada é só o texto na tela/);
+    expect(buildPlanPrompt({ title: 'Fone' }, { withSpeech: false, maxSpeechWords: 6 }).system).toMatch(/de 3 a 6 palavras/);
     expect(silent.system).toMatch(/exatamente 6 cenas/);
   });
   it('accepts a good plan, even wrapped in a code block', () => {
@@ -66,12 +71,31 @@ describe('storyboard plan rules', () => {
     }
     expect(judgePlan(planJson({}, () => ({ speech: 'Olha o que eu encontrei' })), { withSpeech: true }).ok).toBe(true);
   });
-  it('needs a presenter and speech in every scene when there is speech, and none when there is not', () => {
+  it('needs a presenter and speech in every scene, in both modes: the POV video is always narrated', () => {
     expect(judgePlan(planJson({ presenter: null }), { withSpeech: true }).ok).toBe(false);
     expect(judgePlan(planJson({}, n => (n === 4 ? { speech: null } : {})), { withSpeech: true }).ok).toBe(false);
-    expect(judgePlan(planJson(), { withSpeech: false }).ok).toBe(false); // POV has no speech
-    expect(judgePlan(planJson({ presenter: HANDS }, () => ({ speech: null })), { withSpeech: false }).ok).toBe(true);
-    expect(judgePlan(planJson({ presenter: null }, () => ({ speech: null })), { withSpeech: false }).ok).toBe(false); // the hands must be described
+    expect(judgePlan(planJson({ presenter: HANDS }, NARRATION_SCENE), { withSpeech: false }).ok).toBe(true);
+    expect(judgePlan(planJson({ presenter: HANDS }, () => ({ speech: null })), { withSpeech: false }).ok).toBe(false); // POV is never silent
+    expect(judgePlan(planJson({ presenter: null }, NARRATION_SCENE), { withSpeech: false }).ok).toBe(false); // the hands must be described
+  });
+  it('checks the length of the POV narration: not too long, not too short, and the last scene may be short', () => {
+    const verdict = (perScene: (n: number) => Record<string, unknown>, options: { maxSpeechWords?: number } = {}) => judgePlan(planJson({ presenter: HANDS }, perScene), { withSpeech: false, ...options });
+    expect(verdict(NARRATION_SCENE).ok).toBe(true);
+    const tooLong = verdict(n => ({ speech: n === 3 ? 'Olha esse detalhe incrível que organiza tudo na sua bancada de um jeito lindo' : NARRATION(n) }));
+    expect(tooLong.ok).toBe(false); if (!tooLong.ok) expect(tooLong.problems.join(' ')).toMatch(/narração da cena 3 tem 14 palavras, e o máximo é 12/);
+    const tooShort = verdict(n => ({ speech: n === 2 ? 'Olha esse detalhe' : NARRATION(n) }));
+    expect(tooShort.ok).toBe(false); if (!tooShort.ok) expect(tooShort.problems.join(' ')).toMatch(/narração da cena 2 tem só 3 palavras, e o mínimo é 7/);
+    expect(verdict(n => ({ speech: n === 6 ? 'Muita praticidade!' : NARRATION(n) })).ok).toBe(true); // the closing line is short
+    expect(verdict(n => ({ speech: n === 6 ? 'Lindo' : NARRATION(n) })).ok).toBe(false);
+    expect(verdict(NARRATION_SCENE, { maxSpeechWords: 8 }).ok).toBe(false); // 10 words, and the video allows 8
+  });
+  it('keeps the rules of the captions in the narration: no testimonial, price, urgency, bio or call to comment', () => {
+    const verdict = (speech: string) => judgePlan(planJson({ presenter: HANDS }, n => ({ speech: n === 4 ? speech : NARRATION(n) })), { withSpeech: false });
+    expect(verdict('Olha esse detalhe que deixa tudo mais organizado').ok).toBe(true);
+    expect(verdict('Eu comprei e amei esse organizador para a minha casa').ok).toBe(false);
+    expect(verdict('Olha esse preço, só hoje por apenas dez reais agora').ok).toBe(false);
+    expect(verdict('Corre e comenta eu quero para receber o link do produto').ok).toBe(false);
+    expect(verdict('Clica no link da bio para conferir esse organizador lindo').ok).toBe(false);
   });
   it('the scene prompt keeps the real product and asks for the same person only when a second reference exists', () => {
     const plan = JSON.parse(planJson()) as StoryboardPlan;
@@ -258,7 +282,7 @@ describe('drawing the scenes', () => {
     expect(String(forms[1]?.get('prompt'))).toMatch(/mesma pessoa/);
   });
   it('does not ask for a second reference when the video has no person', async () => {
-    const env = await ready({ planText: planJson({ presenter: HANDS }, () => ({ speech: null })) }); await planIt(env, false); const ids = sceneIds(env);
+    const env = await ready({ planText: planJson({ presenter: HANDS }, NARRATION_SCENE) }); await planIt(env, false); const ids = sceneIds(env);
     await draw(env, ids[0]!); await draw(env, ids[1]!);
     const forms = env.r.calls.filter(call => call.url === OPENAI_IMAGE_EDITS_URL).map(call => call.init.body as FormData);
     expect(forms[1]?.getAll('image[]')).toHaveLength(1); expect(String(forms[1]?.get('prompt'))).not.toMatch(/mesma pessoa/);
@@ -380,7 +404,7 @@ describe('the story and the camera', () => {
     expect(speaking).toMatch(/segunda imagem de referência/); expect(speaking).toMatch(/NÃO copie o enquadramento, a pose nem o cenário dela/);
   });
   it('a scene drawn in POV uses only the product photo and carries the camera and the action of the plan', async () => {
-    const env = await ready({ planText: planJson({ presenter: HANDS }, () => ({ speech: null })) }); await planIt(env, false); const ids = sceneIds(env);
+    const env = await ready({ planText: planJson({ presenter: HANDS }, NARRATION_SCENE) }); await planIt(env, false); const ids = sceneIds(env);
     await draw(env, ids[0]!); await draw(env, ids[2]!);
     const forms = env.r.calls.filter(call => call.url === OPENAI_IMAGE_EDITS_URL).map(call => call.init.body as FormData);
     expect(forms.every(form => form.getAll('image[]').length === 1)).toBe(true);
