@@ -52,7 +52,7 @@ export function AutomationCard() {
       </fieldset>
       <label className="flex items-center gap-3 text-sm"><input type="checkbox" className="size-5" checked={story} disabled={busy} onChange={e => setStory(e.target.checked)} />Postar um Story com o mesmo vídeo algumas horas depois do Reels</label>
       <label className="flex items-start gap-3 text-sm"><input type="checkbox" className="mt-0.5 size-5" checked={speech} disabled={busy} onChange={e => setSpeech(e.target.checked)} />
-        <span><span className="font-medium">Personagem falando nos vídeos (experimental).</span> Desmarcado, os vídeos são em formato POV: só as mãos de uma pessoa aparecem, em primeira pessoa e sem fala. Marcado, a IA cria uma pessoa que fala. Vale para a automação e para o botão Gerar conteúdo com a IA.</span></label>
+        <span><span className="font-medium">Personagem falando nos vídeos (experimental).</span> Desmarcado, os vídeos são em formato POV: só as mãos de uma pessoa aparecem, em primeira pessoa, com uma voz feminina narrando em off (todo vídeo tem áudio). Marcado, a IA cria uma pessoa que fala. Vale para a automação e para o botão Gerar conteúdo com a IA.</span></label>
     </div>
     <div className="mt-4"><Button type="button" className="h-11" disabled={busy} onClick={() => void submit()}>{busy ? <LoaderCircle className="animate-spin" /> : <Save />}Salvar automação</Button></div>
     {automation?.enabled && <div className="mt-4 text-sm"><p className="font-medium">Hoje: {automation.madeToday} de {automation.targetToday} Reels criados.{automation.pending > 0 ? ` ${automation.pending} esperando você.` : ''}</p>{automation.message && <p className="mt-1 text-muted-foreground">{automation.message}</p>}</div>}
