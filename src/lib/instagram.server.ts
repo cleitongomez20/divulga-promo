@@ -16,7 +16,8 @@ export type MetaError = { code: number | null; subcode: number | null; type: str
 export type Detail = { step: string; status?: number; network?: boolean; meta?: MetaError | null; [key: string]: unknown };
 export class InstagramError extends Error { constructor(readonly code: InstagramErrorCode, readonly detail: Detail = { step: 'desconhecido' }) { super(code); } }
 export type AppCredentials = { appId: string; appSecret: string; configId: string };
-type StoredToken = { accessToken: string; issuedAt: number; expiresAt: number | null };
+/** The system-user token is kept for publishing; the Page token is kept separately for Page messaging and subscriptions. */
+type StoredToken = { accessToken: string; pageAccessToken?: string | null; pageTasks?: string[]; issuedAt: number; expiresAt: number | null };
 
 // ---- signed "state" that ties the login round trip to the user who started it ----
 const toB64Url = (bytes: Uint8Array) => btoa(Array.from(bytes, b => String.fromCharCode(b)).join('')).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -128,7 +129,6 @@ const listAccounts = (json: Record<string, unknown>): { accounts: SharedAccount[
  */
 export async function discoverAssignedAccounts(fetcher: Fetcher, token: string): Promise<{ accounts: SharedAccount[]; tries: Detail[] }> {
   const tries: Detail[] = [];
-  // Ask for the username too; if Meta refuses the field list, ask again with no fields so the ids still come back.
   for (const fields of ['id,username', null] as const) {
     try {
       const params: Record<string, string> = { limit: '100', access_token: token };
@@ -160,7 +160,7 @@ export async function discoverByIntrospection(fetcher: Fetcher, token: string, b
       connections[node.label] = list; names = list.filter(name => /instagram/i.test(name)).slice(0, 10);
     } catch (error) { tries.push(error instanceof InstagramError ? { ...error.detail, no: node.label } : { step: 'introspeccao', no: node.label }); continue; }
     for (const name of names) {
-      if (node.label === 'me' && name === 'assigned_instagram_accounts') continue; // already asked on its own
+      if (node.label === 'me' && name === 'assigned_instagram_accounts') continue;
       try {
         const { accounts, items } = listAccounts(await graphGet(fetcher, graphUrl(`${node.path}/${encodeURIComponent(name)}`, { fields: 'id,username', limit: '100', access_token: token }), 'perfil', 'conexao'));
         tries.push({ step: 'conexao', no: node.label, via: name, encontradas: accounts.length, itens_recebidos: items });
@@ -174,6 +174,35 @@ export async function discoverByIntrospection(fetcher: Fetcher, token: string, b
 export async function verifyAccount(fetcher: Fetcher, token: string, igUserId: string) {
   const json = await graphGet(fetcher, graphUrl(`/${encodeURIComponent(igUserId)}`, { fields: 'id,username', access_token: token }), 'perfil', 'verificar_conta');
   return { username: text(json['username']) };
+}
+
+export type LinkedPage = { pageId: string; pageName: string | null; pageAccessToken: string; pageTasks: string[] };
+const objectId = (value: unknown) => value && typeof value === 'object' ? text((value as Record<string, unknown>)['id']) : null;
+/**
+ * Finds the Facebook Page connected to the selected Instagram professional account and retrieves its Page Access Token.
+ * Meta documents /me/accounts as the Page-token discovery edge for system users with pages_read_engagement.
+ * The token is returned to the caller only so it can be sealed in connector_secrets; never log it or expose it to a browser.
+ */
+export async function discoverLinkedPage(fetcher: Fetcher, systemUserToken: string, igUserId: string): Promise<LinkedPage | null> {
+  const json = await graphGet(fetcher, graphUrl('/me/accounts', {
+    fields: 'id,name,access_token,tasks,instagram_business_account,connected_instagram_account',
+    limit: '100',
+    access_token: systemUserToken,
+  }), 'perfil', 'listar_paginas');
+  const pages = Array.isArray(json['data']) ? (json['data'] as unknown[]) : [];
+  for (const item of pages) {
+    if (!item || typeof item !== 'object') continue;
+    const page = item as Record<string, unknown>;
+    const linkedBusinessAccount = objectId(page['instagram_business_account']);
+    const linkedConnectedAccount = objectId(page['connected_instagram_account']);
+    if (linkedBusinessAccount !== igUserId && linkedConnectedAccount !== igUserId) continue;
+    const pageId = text(page['id']);
+    const pageAccessToken = text(page['access_token']);
+    if (!pageId || !pageAccessToken) throw new InstagramError('perfil', { step: 'pagina_sem_token' });
+    const pageTasks = Array.isArray(page['tasks']) ? (page['tasks'] as unknown[]).filter((task): task is string => typeof task === 'string') : [];
+    return { pageId, pageName: text(page['name']), pageAccessToken, pageTasks };
+  }
+  return null;
 }
 
 // ---- storage (connector_secrets holds the sealed values; the tables hold only references) ----
@@ -210,7 +239,6 @@ export async function saveAppCredentials(admin: Admin, userId: string, masterKey
     : await admin.from('marketplace_connections').insert({ user_id: userId, marketplace: 'instagram_app', status: 'configured', credential_id: secretId });
   if (error) { await dropSecret(admin, userId, secretId); throw new InstagramError('salvar', { step: 'guardar_app' }); }
   await dropSecret(admin, userId, existing?.credential_id ?? null);
-  // A token belongs to one app: a different app means the account has to be connected again.
   if (previous && previous.appId !== credentials.appId) await disconnectAccount(admin, userId);
 }
 export async function removeAppCredentials(admin: Admin, userId: string) {
@@ -266,20 +294,26 @@ export async function completeChosenAccount(p: { admin: Admin; userId: string; m
     if (!chosen) return { ok: false, code: 'conta' };
     const verified = await verifyAccount(fetcher, pending.accessToken, chosen.igUserId).catch(() => ({ username: null }));
     const username = verified.username ?? chosen.username;
-    await saveConnectedAccount(p.admin, p.userId, p.masterKey, { igUserId: chosen.igUserId, username, pageId: null, token: pending.accessToken, issuedAt: now, expiresAt: null });
+    const linkedPage = await discoverLinkedPage(fetcher, pending.accessToken, chosen.igUserId).catch(() => null);
+    await saveConnectedAccount(p.admin, p.userId, p.masterKey, {
+      igUserId: chosen.igUserId, username, pageId: linkedPage?.pageId ?? null,
+      pageAccessToken: linkedPage?.pageAccessToken ?? null, pageTasks: linkedPage?.pageTasks ?? [],
+      token: pending.accessToken, issuedAt: now, expiresAt: null,
+    });
     await clearPendingChoice(p.admin, p.userId);
-    await p.admin.from('activity_log').insert({ user_id: p.userId, action: 'Conexão com o Instagram', result: 'Conta conectada', details: { escolhida: true, usuario: username } as Json });
+    await p.admin.from('activity_log').insert({ user_id: p.userId, action: 'Conexão com o Instagram', result: 'Conta conectada', details: { escolhida: true, usuario: username, pagina_encontrada: Boolean(linkedPage) } as Json });
     return { ok: true, username };
   } catch (error) { return { ok: false, code: error instanceof InstagramError ? error.code : 'salvar' }; }
 }
 
 export async function loadAccount(admin: Admin, userId: string) {
   const row = await accountRow(admin, userId);
-  // A disconnected row is only kept for the history of posts; for the connection screen there is no account.
   return row && row.status !== 'disconnected' ? { username: row.username, igUserId: row.ig_user_id, pageId: row.page_id, status: row.status } : null;
 }
-export async function saveConnectedAccount(admin: Admin, userId: string, masterKey: string, p: { igUserId: string; username: string | null; pageId: string | null; token: string; issuedAt: number; expiresAt: number | null }) {
-  const secretId = await insertSecret(admin, userId, masterKey, TOKEN_PURPOSE, { accessToken: p.token, issuedAt: p.issuedAt, expiresAt: p.expiresAt } satisfies StoredToken);
+export async function saveConnectedAccount(admin: Admin, userId: string, masterKey: string, p: { igUserId: string; username: string | null; pageId: string | null; token: string; pageAccessToken?: string | null; pageTasks?: string[]; issuedAt: number; expiresAt: number | null }) {
+  const secretId = await insertSecret(admin, userId, masterKey, TOKEN_PURPOSE, {
+    accessToken: p.token, pageAccessToken: p.pageAccessToken ?? null, pageTasks: p.pageTasks ?? [], issuedAt: p.issuedAt, expiresAt: p.expiresAt,
+  } satisfies StoredToken);
   const existing = await accountRow(admin, userId);
   const values = { ig_user_id: p.igUserId, username: p.username, page_id: p.pageId, credential_id: secretId, token_expires_at: p.expiresAt === null ? null : new Date(p.expiresAt).toISOString(), status: 'connected' };
   const { error } = existing
@@ -290,14 +324,13 @@ export async function saveConnectedAccount(admin: Admin, userId: string, masterK
 }
 /**
  * Posts, media and bio pages point at the account row (foreign keys without cascade), so the row cannot be deleted once the
- * user has any of them. Disconnecting therefore keeps the row (and its history) and only clears the access: the token is
- * detached and destroyed, and the status becomes "disconnected". Connecting again reuses the same row.
+ * user has any of them. Disconnecting therefore keeps the row (and its history) and only clears the access.
  */
 export async function disconnectAccount(admin: Admin, userId: string) {
   const row = await accountRow(admin, userId);
   if (!row) return;
   const { error } = await admin.from('instagram_accounts')
-    .update({ credential_id: null, ig_user_id: null, token_expires_at: null, status: 'disconnected' }).eq('id', row.id).eq('user_id', userId);
+    .update({ credential_id: null, ig_user_id: null, page_id: null, token_expires_at: null, status: 'disconnected' }).eq('id', row.id).eq('user_id', userId);
   if (error) throw new InstagramError('salvar', { step: 'desconectar' });
   await dropSecret(admin, userId, row.credential_id);
 }
@@ -309,12 +342,17 @@ async function readToken(admin: Admin, userId: string, masterKey: string) {
   if (!data) return null;
   return { stored: await openJson<StoredToken>(data.ciphertext, masterKey, userId, TOKEN_PURPOSE), igUserId: row.ig_user_id, pageId: row.page_id };
 }
-/** The token used for publishing (a Page token, which does not expire while the permission stands). */
-export async function getPublishingToken(admin: Admin, userId: string, masterKey: string, now = Date.now()) {
+/** The system-user token remains the publishing token. The Page token is separately exposed only to server-side callers. */
+export type PublishingCredentials = { token: string; igUserId: string; pageId: string | null; pageAccessToken?: string | null; pageTasks?: string[] };
+export async function getPublishingToken(admin: Admin, userId: string, masterKey: string, now = Date.now()): Promise<PublishingCredentials | null> {
   const current = await readToken(admin, userId, masterKey);
   if (!current) return null;
   if (current.stored.expiresAt !== null && current.stored.expiresAt <= now) throw new InstagramError('expirado', { step: 'validade' });
-  return { token: current.stored.accessToken, igUserId: current.igUserId, pageId: current.pageId };
+  const base = { token: current.stored.accessToken, igUserId: current.igUserId, pageId: current.pageId };
+  // Keep the historical return shape for accounts that have not obtained a Page token yet.
+  // Publishing continues to use the system-user token; only a discovered Page adds the extra server-side credentials.
+  if (!current.stored.pageAccessToken) return base;
+  return { ...base, pageAccessToken: current.stored.pageAccessToken, pageTasks: current.stored.pageTasks ?? [] };
 }
 /** "Test connection": asks the Instagram account itself. A rejected token (code 190) means the user must connect again. */
 export async function checkAccount(admin: Admin, userId: string, masterKey: string, fetcher: Fetcher = fetch) {
@@ -341,10 +379,8 @@ export async function completeInstagramLogin(p: { admin: Admin; userId: string; 
   try {
     const app = await loadAppCredentials(p.admin, p.userId, p.masterKey);
     if (!app) return { ok: false, code: 'app' };
-    // The login hands over a Business Integration System User token. It is used as received (no long-lived exchange).
     const { token } = await exchangeCode(fetcher, { appId: app.appId, appSecret: app.appSecret, redirectUri: p.redirectUri, code: p.code });
     diagnostics['codigo_trocado'] = true;
-    // A failure to list permissions is not fatal: the account search below shows whether the access works.
     const granted = await fetchGrantedPermissions(fetcher, token).catch((error: unknown) => { diagnostics['permissoes_erro'] = error instanceof InstagramError ? error.detail : true; return null; });
     if (granted) {
       diagnostics['permissoes'] = granted;
@@ -362,7 +398,6 @@ export async function completeInstagramLogin(p: { admin: Admin; userId: string; 
       if (found.via) diagnostics['achada_por'] = found.via;
     }
     diagnostics['tentativas'] = tries; diagnostics['contas_compartilhadas'] = accounts.length;
-    // More than one account came with the login (earlier shares stay listed): the user picks, the app does not guess.
     if (accounts.length > 1) {
       await savePendingChoice(p.admin, p.userId, p.masterKey, { accessToken: token, accounts, issuedAt: now });
       await record('Aguardando a escolha da conta');
@@ -376,7 +411,17 @@ export async function completeInstagramLogin(p: { admin: Admin; userId: string; 
     }
     const verified = await verifyAccount(fetcher, token, chosen.igUserId).catch((error: unknown) => { diagnostics['verificar_erro'] = error instanceof InstagramError ? error.detail : true; return { username: null }; });
     const username = verified.username ?? chosen.username;
-    await saveConnectedAccount(p.admin, p.userId, p.masterKey, { igUserId: chosen.igUserId, username, pageId: null, token, issuedAt: now, expiresAt: null });
+    const linkedPage = await discoverLinkedPage(fetcher, token, chosen.igUserId).catch((error: unknown) => {
+      diagnostics['pagina_erro'] = error instanceof InstagramError ? error.detail : { step: 'listar_paginas' };
+      return null;
+    });
+    diagnostics['pagina_encontrada'] = Boolean(linkedPage);
+    if (linkedPage) diagnostics['pagina'] = { id: linkedPage.pageId, nome: linkedPage.pageName, tarefas: linkedPage.pageTasks };
+    await saveConnectedAccount(p.admin, p.userId, p.masterKey, {
+      igUserId: chosen.igUserId, username, pageId: linkedPage?.pageId ?? null,
+      pageAccessToken: linkedPage?.pageAccessToken ?? null, pageTasks: linkedPage?.pageTasks ?? [],
+      token, issuedAt: now, expiresAt: null,
+    });
     diagnostics['usuario'] = username;
     await record('Conta conectada');
     return { ok: true };
@@ -397,7 +442,6 @@ export async function connectOwnAccount(p: { admin: Admin; userId: string; maste
   const diagnostics: Record<string, unknown> = { modo: 'usuario_do_sistema' };
   const record = (result: string) => p.admin.from('activity_log').insert({ user_id: p.userId, action: 'Conexão com o Instagram', result, details: diagnostics as Json });
   try {
-    // A failure to list permissions is not fatal: reading the account below already proves the access.
     const granted = await fetchGrantedPermissions(fetcher, p.accessToken).catch((error: unknown) => { diagnostics['permissoes_erro'] = error instanceof InstagramError ? error.detail : true; return null; });
     if (granted) {
       diagnostics['permissoes'] = granted;
@@ -406,7 +450,6 @@ export async function connectOwnAccount(p: { admin: Admin; userId: string; maste
     }
     let chosen: SharedAccount | null = p.igUserId ? { igUserId: p.igUserId, username: null } : null;
     if (!chosen) {
-      // The token lists the accounts given to it: Meta's documented list first, then whatever Instagram connections it offers.
       const documented = await discoverAssignedAccounts(fetcher, p.accessToken);
       const tries = [...documented.tries]; let accounts = documented.accounts;
       if (!accounts.length) {
@@ -418,12 +461,21 @@ export async function connectOwnAccount(p: { admin: Admin; userId: string; maste
       chosen = accounts[0] ?? null;
       if (!chosen) { await record('Nenhuma conta do Instagram encontrada'); return { ok: false, code: 'token_sem_conta' }; }
     }
-    // Reading the account proves the token works and that the account was given to it.
     const { username } = await verifyAccount(fetcher, p.accessToken, chosen.igUserId).catch((error: unknown) => {
       if (error instanceof InstagramError) { diagnostics['falha'] = error.detail; throw new InstagramError('conta', error.detail); }
       throw error;
     });
-    await saveConnectedAccount(p.admin, p.userId, p.masterKey, { igUserId: chosen.igUserId, username: username ?? chosen.username, pageId: null, token: p.accessToken, issuedAt: now, expiresAt: null });
+    const linkedPage = await discoverLinkedPage(fetcher, p.accessToken, chosen.igUserId).catch((error: unknown) => {
+      diagnostics['pagina_erro'] = error instanceof InstagramError ? error.detail : { step: 'listar_paginas' };
+      return null;
+    });
+    diagnostics['pagina_encontrada'] = Boolean(linkedPage);
+    if (linkedPage) diagnostics['pagina'] = { id: linkedPage.pageId, nome: linkedPage.pageName, tarefas: linkedPage.pageTasks };
+    await saveConnectedAccount(p.admin, p.userId, p.masterKey, {
+      igUserId: chosen.igUserId, username: username ?? chosen.username, pageId: linkedPage?.pageId ?? null,
+      pageAccessToken: linkedPage?.pageAccessToken ?? null, pageTasks: linkedPage?.pageTasks ?? [],
+      token: p.accessToken, issuedAt: now, expiresAt: null,
+    });
     diagnostics['conta'] = chosen.igUserId; diagnostics['usuario'] = username ?? chosen.username;
     await record('Conta própria conectada');
     return { ok: true, username: username ?? chosen.username };

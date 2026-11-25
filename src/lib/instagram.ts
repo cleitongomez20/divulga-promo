@@ -7,8 +7,21 @@ export const META_CONFIG_ID = '1592981445966230';
 export const PUBLIC_ORIGIN = 'https://divulga-promo.lovable.app';
 export const CALLBACK_URL = `${PUBLIC_ORIGIN}${CALLBACK_PATH}`;
 export const GRAPH_VERSION = 'v27.0';
-// What the login configuration on the Meta side has to grant for publishing to work.
+
+// Permissions required by the existing Instagram publishing connection.
+// Keep these separate from the additional permissions checked by the private-reply feature.
 export const REQUIRED_PERMISSIONS = ['instagram_basic', 'instagram_content_publish'] as const;
+
+// Permissions for Instagram comment webhooks, Page subscriptions and private replies.
+// pages_read_engagement is used to retrieve the Page Access Token through /me/accounts;
+// pages_show_list and pages_manage_metadata are required for the Page subscribed_apps edge.
+export const REQUIRED_REPLY_PERMISSIONS = [
+  'instagram_manage_comments',
+  'pages_messaging',
+  'pages_manage_metadata',
+  'pages_show_list',
+  'pages_read_engagement',
+] as const;
 
 export const instagramAppSchema = z.object({
   appId: z.string().trim().regex(/^\d{8,20}$/, 'O ID do app deve conter apenas números.'),

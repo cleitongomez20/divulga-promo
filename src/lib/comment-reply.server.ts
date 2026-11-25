@@ -2,7 +2,7 @@
 // to that person as a private reply. The whole flow is built around Meta's rules: one private reply per comment, within 7 days, and
 // only notifications that really come from Meta are believed (the signature is checked with the app secret of the account's owner).
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { GRAPH_VERSION } from './instagram';
+import { GRAPH_VERSION, META_APP_ID, REQUIRED_REPLY_PERMISSIONS } from './instagram';
 import { InstagramError, fetchGrantedPermissions, getPublishingToken, loadAppCredentials } from './instagram.server';
 import {
   DEFAULT_TEMPLATE, DEFAULT_TRIGGER, MAX_DMS_PER_HOUR, MAX_SEND_ATTEMPTS, REPLY_WINDOW_MS, SEND_PACE_MS, STALE_SENDING_MS, WEBHOOK_PATH, buildDm, matchesTrigger, outcomeMessage, outcomeOf,
@@ -39,20 +39,21 @@ async function graphCall(fetcher: Fetcher, method: 'GET' | 'POST', path: string,
   return json;
 }
 
-/** Sends the private reply to the author of a comment. With a Page linked, Meta documents the Page as the sender; the Instagram account is tried next if that is refused as unsupported. */
-export async function sendPrivateReply(fetcher: Fetcher, p: { token: string; pageId: string | null; igUserId: string; commentId: string; text: string }): Promise<{ messageId: string | null }> {
-  const targets = [p.pageId, p.igUserId].filter((id, index, all): id is string => Boolean(id) && all.indexOf(id) === index);
-  let last: ReplyError | null = null;
-  for (const target of targets) {
-    try {
-      const json = await graphCall(fetcher, 'POST', `/${encodeURIComponent(target)}/messages`, p.token, { recipient: { comment_id: p.commentId }, message: { text: p.text } });
-      return { messageId: str(json['message_id']) || null };
-    } catch (error) {
-      if (error instanceof ReplyError && error.outcome === 'invalid') { last = error; continue; } // refused as unsupported: nothing was sent, try the other id
-      throw error;
-    }
-  }
-  throw last ?? new ReplyError('invalid');
+type PrivateReplyInput =
+  | { pageAccessToken: string; pageId: string; commentId: string; text: string }
+  // Legacy call shape remains accepted at the type boundary so older tests/callers still compile.
+  // It is deliberately rejected at runtime: the system-user token is not a substitute for a Page Access Token.
+  | { pageAccessToken?: never; token: string; pageId: string | null; igUserId: string; commentId: string; text: string };
+
+/** Sends a private reply using the Page ID and its Page Access Token, as required by Meta's Facebook Login flow. */
+export async function sendPrivateReply(fetcher: Fetcher, p: PrivateReplyInput): Promise<{ messageId: string | null }> {
+  const pageAccessToken = 'pageAccessToken' in p ? p.pageAccessToken : null;
+  if (!p.pageId || !pageAccessToken) throw new ReplyError('permission');
+  const json = await graphCall(fetcher, 'POST', `/${encodeURIComponent(p.pageId)}/messages`, pageAccessToken, {
+    recipient: { comment_id: p.commentId },
+    message: { text: p.text },
+  });
+  return { messageId: str(json['message_id']) || null };
 }
 
 type Settings = { enabled: boolean; template: string; lastMessage: string | null; lastEventAt: string | null };
@@ -81,7 +82,7 @@ export async function ingestEvents(db: Db, events: readonly CommentEvent[], p: {
     if (!account) continue;
     if (!settings.has(account.userId)) settings.set(account.userId, await settingsOf(db, account.userId));
     if (!settings.get(account.userId)?.enabled) continue;
-    if (event.fromId === event.igUserId) continue; // the account's own comment
+    if (event.fromId === event.igUserId) continue;
     const { data: found } = await db.from('posts').select('id,trigger_word').eq('user_id', account.userId).eq('ig_media_id', event.mediaId).eq('status', 'published').maybeSingle();
     const post = found as Row | null;
     if (!post) continue;
@@ -89,7 +90,7 @@ export async function ingestEvents(db: Db, events: readonly CommentEvent[], p: {
     const inserted = await db.from('comment_events').insert({
       user_id: account.userId, post_id: str(post['id']), comment_id: event.commentId, author_id: event.fromId, author_username: event.username, status: 'detected', attempts: 0, commented_at: iso(now()),
     });
-    if (!inserted.error) queued++; // a repeated delivery of the same comment is refused by the database and ignored here
+    if (!inserted.error) queued++;
   }
   return queued;
 }
@@ -99,7 +100,6 @@ export type SendResult = { sent: number; failed: number; waiting: number; skippe
 export async function sendPending(db: Db, p: { masterKey: string; fetcher?: Fetcher; now?: () => number; limit?: number; sleep?: (ms: number) => Promise<void> }): Promise<SendResult> {
   const fetcher = p.fetcher ?? fetch; const now = p.now ?? Date.now; const sleep = p.sleep ?? (ms => new Promise<void>(resolve => setTimeout(resolve, ms)));
   const result: SendResult = { sent: 0, failed: 0, waiting: 0, skipped: 0 };
-  // A message left "sending" by a crash goes back to the queue (Meta accepts only one reply per comment, so a repeat can never double it).
   await db.from('comment_events').update({ status: 'detected' }).eq('status', 'sending').lt('updated_at', iso(now() - STALE_SENDING_MS));
   const { data } = await db.from('comment_events').select('id,user_id,post_id,comment_id,attempts,commented_at').eq('status', 'detected').order('created_at', { ascending: true }).limit(20);
   const stopped = new Set<string>(); let handled = 0;
@@ -121,7 +121,6 @@ export async function sendPending(db: Db, p: { masterKey: string; fetcher?: Fetc
     const link = str((post as Row | null)?.['affiliate_link']);
     if (!link) { await finish('failed', 'A publicação não tem link de afiliado para enviar.'); result.failed++; continue; }
 
-    // No more than the hourly cap per account, and a pause between two messages.
     const { count: lastHour } = await db.from('comment_events').select('id', { count: 'exact', head: true }).eq('user_id', userId).eq('status', 'sent').gte('sent_at', iso(now() - 3_600_000));
     if ((lastHour ?? 0) >= MAX_DMS_PER_HOUR) { await release(null, 1); stopped.add(userId); result.waiting++; continue; }
     const { data: pace } = await db.rpc('reserve_connector_slot', { p_scope: `dm:${userId}`, p_interval_ms: SEND_PACE_MS });
@@ -135,7 +134,15 @@ export async function sendPending(db: Db, p: { masterKey: string; fetcher?: Fetc
     }
     handled++;
     try {
-      const sent = await sendPrivateReply(fetcher, { token: credentials.token, pageId: credentials.pageId, igUserId: credentials.igUserId, commentId: str(row['comment_id']), text: buildDm(settings.template, link) });
+      if (!credentials.pageId || !credentials.pageAccessToken || !credentials.pageTasks?.includes('MESSAGING')) {
+        throw new ReplyError('permission');
+      }
+      const sent = await sendPrivateReply(fetcher, {
+        pageAccessToken: credentials.pageAccessToken,
+        pageId: credentials.pageId,
+        commentId: str(row['comment_id']),
+        text: buildDm(settings.template, link),
+      });
       await finish('sent', null, { sent_at: iso(now()), message_id: sent.messageId });
       await db.from('comment_reply_settings').update({ last_event_at: iso(now()), last_message: null }).eq('user_id', userId);
       await db.from('activity_log').insert({ user_id: userId, action: 'Link enviado por mensagem', result: 'Resposta privada a um comentário', details: { post_id: str(row['post_id']) } });
@@ -149,7 +156,7 @@ export async function sendPending(db: Db, p: { masterKey: string; fetcher?: Fetc
       else if (error.outcome === 'auth') {
         await db.from('instagram_accounts').update({ status: 'expired' }).eq('user_id', userId);
         await note(db, userId, message); await release(message, 1); stopped.add(userId); result.waiting++;
-      } else { // retry or permission: try again a few times, then give up
+      } else {
         if (error.outcome === 'permission') await note(db, userId, message);
         if (attempts + 1 >= MAX_SEND_ATTEMPTS) { await finish('failed', message); result.failed++; } else { await release(message, 0); result.waiting++; }
       }
@@ -175,9 +182,9 @@ export async function handleWebhookRequest(db: Db, req: WebhookRequest): Promise
   const verified: CommentEvent[] = [];
   for (const igUserId of [...new Set(events.map(event => event.igUserId))]) {
     const account = await accountByInstagramId(db, igUserId);
-    if (!account) continue; // an account of another user of the Meta app: not ours, ignored
+    if (!account) continue;
     const app = await loadAppCredentials(db as never, account.userId, req.masterKey).catch(() => null);
-    if (!app) continue; // without the app secret nothing can be checked, so nothing is believed
+    if (!app) continue;
     if (!(await verifySignature(req.rawBody, req.signature, app.appSecret))) return { status: 401, body: 'Invalid signature' };
     verified.push(...events.filter(event => event.igUserId === igUserId));
   }
@@ -214,33 +221,42 @@ export type SetupCheck = {
   permissions: { granted: string[]; missing: string[]; ok: boolean };
   subscription: { ok: boolean; fields: string[] } | null;
 };
-const REQUIRED_COMMENTS = 'instagram_manage_comments';
-const MESSAGING = ['instagram_manage_messages', 'pages_messaging'];
-/** Reads, from Meta itself, the permissions the connection has and whether the comments of the account reach this app. */
+const PAGE_MANAGEMENT_TASKS = ['CREATE_CONTENT', 'MANAGE', 'MODERATE'];
+/** Reads the required permission grants, Page tasks and the app's Page webhook subscription. */
 export async function checkReplySetup(db: Db, p: { userId: string; masterKey: string; fetcher?: Fetcher; now?: () => number }): Promise<SetupCheck> {
   const fetcher = p.fetcher ?? fetch;
   const credentials = await getPublishingToken(db as never, p.userId, p.masterKey, (p.now ?? Date.now)());
   if (!credentials) throw new ReplyError('auth');
+
   const granted = await fetchGrantedPermissions(fetcher, credentials.token);
-  const missing: string[] = [];
-  if (!granted.includes(REQUIRED_COMMENTS)) missing.push(REQUIRED_COMMENTS);
-  if (!MESSAGING.some(permission => granted.includes(permission))) missing.push(MESSAGING[0] as string);
+  const missing: string[] = REQUIRED_REPLY_PERMISSIONS.filter(permission => !granted.includes(permission));
+  if (!credentials.pageId) missing.push('page_id');
+  if (!credentials.pageAccessToken) missing.push('page_access_token');
+  if (!credentials.pageTasks?.includes('MESSAGING')) missing.push('tarefa_MESSAGING');
+  const canManagePageSubscriptions = (credentials.pageTasks ?? []).some(task => PAGE_MANAGEMENT_TASKS.includes(task));
+  if (!canManagePageSubscriptions) missing.push('tarefa_CREATE_CONTENT_MANAGE_ou_MODERATE');
+
   let subscription: SetupCheck['subscription'] = null;
-  if (credentials.pageId) {
+  if (credentials.pageId && credentials.pageAccessToken) {
     try {
-      const json = await graphCall(fetcher, 'GET', `/${encodeURIComponent(credentials.pageId)}/subscribed_apps`, credentials.token);
+      const json = await graphCall(fetcher, 'GET', `/${encodeURIComponent(credentials.pageId)}/subscribed_apps`, credentials.pageAccessToken);
       const apps = Array.isArray(json['data']) ? (json['data'] as unknown[]) : [];
-      const fields = apps.flatMap(app => (app && typeof app === 'object' && Array.isArray((app as Row)['subscribed_fields']) ? ((app as Row)['subscribed_fields'] as unknown[]).map(String) : []));
-      subscription = { ok: fields.includes('comments'), fields };
+      const ownApp = apps.find(app => app && typeof app === 'object' && str((app as Row)['id']) === META_APP_ID) as Row | undefined;
+      const fields = ownApp && Array.isArray(ownApp['subscribed_fields']) ? (ownApp['subscribed_fields'] as unknown[]).map(String) : [];
+      subscription = { ok: Boolean(ownApp) && fields.includes('feed'), fields };
     } catch { subscription = null; }
   }
-  return { permissions: { granted: granted.filter(permission => [REQUIRED_COMMENTS, ...MESSAGING].includes(permission)), missing, ok: missing.length === 0 }, subscription };
+  return {
+    permissions: { granted: granted.filter(permission => REQUIRED_REPLY_PERMISSIONS.includes(permission as typeof REQUIRED_REPLY_PERMISSIONS[number])), missing, ok: missing.length === 0 },
+    subscription,
+  };
 }
 
-/** Asks Meta to send this app the comments of the account (the Webhooks product must also be set up in the app's dashboard). */
+/** Installs the app on the connected Facebook Page for the Page feed webhook; Instagram comments are subscribed in the app dashboard. */
 export async function subscribeComments(db: Db, p: { userId: string; masterKey: string; fetcher?: Fetcher; now?: () => number }): Promise<void> {
   const credentials = await getPublishingToken(db as never, p.userId, p.masterKey, (p.now ?? Date.now)());
   if (!credentials) throw new ReplyError('auth');
-  if (!credentials.pageId) throw new ReplyError('invalid');
-  await graphCall(p.fetcher ?? fetch, 'POST', `/${encodeURIComponent(credentials.pageId)}/subscribed_apps?subscribed_fields=comments`, credentials.token, {});
+  const canManagePageSubscriptions = (credentials.pageTasks ?? []).some(task => PAGE_MANAGEMENT_TASKS.includes(task));
+  if (!credentials.pageId || !credentials.pageAccessToken || !canManagePageSubscriptions) throw new ReplyError('permission');
+  await graphCall(p.fetcher ?? fetch, 'POST', `/${encodeURIComponent(credentials.pageId)}/subscribed_apps?subscribed_fields=feed`, credentials.pageAccessToken, {});
 }
