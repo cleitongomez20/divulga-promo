@@ -19,7 +19,6 @@ export function CommentReplyCard() {
   const [notice, setNotice] = useState('');
   const [result, setResult] = useState<SetupCheck | null>(null);
 
-  // Shows what is saved once it arrives.
   useEffect(() => { if (status) { setEnabled(status.enabled); setTemplate(status.template); } }, [status?.enabled, status?.template]);
 
   async function run(name: string, work: () => Promise<void>) {
@@ -46,10 +45,11 @@ export function CommentReplyCard() {
     <div className="mt-6 rounded-md border p-4">
       <h3 className="flex items-center gap-2 text-sm font-semibold"><RadioTower className="size-4" />Configuração na Meta (uma vez só)</h3>
       <ol className="mt-3 list-decimal space-y-2 pl-5 text-sm">
-        <li>No painel do seu app na Meta, abra <strong>Webhooks</strong>, escolha o produto <strong>Instagram</strong> e clique em editar a assinatura.</li>
+        <li>No painel do seu app na Meta, abra <strong>Webhooks</strong>, escolha o produto <strong>Instagram</strong> e edite a assinatura.</li>
         <li>Em <strong>URL de callback</strong>, cole: <code className="break-all rounded bg-muted px-1.5 py-0.5 text-xs">{status?.webhookUrl ?? '...'}</code></li>
         <li>Em <strong>Token de verificação</strong>, use o mesmo valor do segredo <code className="rounded bg-muted px-1.5 py-0.5 text-xs">META_WEBHOOK_VERIFY_TOKEN</code> que você cria no Lovable (Cloud, Secrets). {status && !status.verifyTokenConfigured && <strong className="text-destructive">Ainda não encontrei esse segredo no app.</strong>}</li>
-        <li>Verifique e salve, e ative o campo <strong>comments</strong>.</li>
+        <li>No objeto <strong>Instagram</strong>, assine o campo <strong>comments</strong> e salve.</li>
+        <li>O botão abaixo instala o aplicativo na Página do Facebook vinculada e assina o campo de Página <strong>feed</strong>. Esse campo é separado do <strong>comments</strong> do objeto Instagram.</li>
         <li>Volte aqui, clique em <strong>Ativar recebimento</strong> e depois em <strong>Verificar configuração</strong>.</li>
       </ol>
       <div className="mt-4 flex flex-wrap gap-3">
@@ -58,9 +58,9 @@ export function CommentReplyCard() {
       </div>
       {result && <ul className="mt-4 space-y-2 text-sm">
         <li className="flex items-start gap-2">{result.permissions.ok ? <CircleCheck className="mt-0.5 size-4 text-primary" /> : <CircleAlert className="mt-0.5 size-4 text-destructive" />}
-          <span>{result.permissions.ok ? 'As permissões de comentários e mensagens estão liberadas.' : `Faltam permissões na conexão: ${result.permissions.missing.join(', ')}. Gere o token de novo com essas permissões e reconecte.`}</span></li>
+          <span>{result.permissions.ok ? 'As permissões, a Página e as tarefas necessárias estão liberadas.' : `Faltam autorizações ou requisitos na conexão: ${result.permissions.missing.join(', ')}. Gere um novo token com as permissões necessárias e reconecte a conta.`}</span></li>
         <li className="flex items-start gap-2">{result.subscription?.ok ? <CircleCheck className="mt-0.5 size-4 text-primary" /> : <CircleAlert className="mt-0.5 size-4 text-destructive" />}
-          <span>{result.subscription === null ? 'Não consegui ler o recebimento de comentários. A conexão precisa de uma Página do Facebook ligada ao Instagram.' : result.subscription.ok ? 'A Meta está enviando os comentários desta conta para o app.' : 'A Meta ainda não está enviando os comentários. Clique em "Ativar recebimento".'}</span></li>
+          <span>{result.subscription === null ? 'Não consegui consultar a assinatura da Página. Verifique o Page Access Token e as permissões da Página.' : result.subscription.ok ? 'O aplicativo Divulga Promo está inscrito na Página pelo campo feed. O campo comments do Instagram é configurado separadamente no painel da Meta.' : 'A assinatura feed da Página ainda não está ativa para o Divulga Promo. Clique em "Ativar recebimento".'}</span></li>
       </ul>}
     </div>
 
