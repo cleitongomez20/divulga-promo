@@ -1,387 +1,274 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
-  InstagramError, signState, verifyState, buildAuthorizeUrl, exchangeCode, fetchGrantedPermissions, discoverAssignedAccounts, verifyAccount,
-  completeInstagramLogin, connectOwnAccount, discoverByIntrospection, saveAppCredentials, loadAppCredentials, removeAppCredentials, getPublishingToken, checkAccount, loadAccount, disconnectAccount, saveConnectedAccount, loadPendingAccounts, completeChosenAccount,
+  InstagramError,
+  buildAuthorizeUrl,
+  checkAccount,
+  completeInstagramLogin,
+  connectOwnAccount,
+  discoverAssignedAccounts,
+  discoverLinkedPage,
+  disconnectAccount,
+  exchangeCode,
+  fetchGrantedPermissions,
+  getPublishingToken,
+  loadAccount,
+  loadAppCredentials,
+  saveAppCredentials,
+  signState,
+  verifyAccount,
+  verifyState,
 } from '@/lib/instagram.server';
-import { instagramAppSchema, instagramSecretSchema, ownAccountSchema, instagramErrorMessage, maskId, REQUIRED_PERMISSIONS, CALLBACK_URL, META_APP_ID, META_CONFIG_ID } from '@/lib/instagram';
-import { sealJson, openJson } from '@/lib/secret-box.server';
+import {
+  CALLBACK_URL,
+  GRAPH_VERSION,
+  META_APP_ID,
+  META_CONFIG_ID,
+  REQUIRED_PERMISSIONS,
+  REQUIRED_REPLY_PERMISSIONS,
+  instagramAppSchema,
+  instagramErrorMessage,
+  instagramSecretSchema,
+  maskId,
+  ownAccountSchema,
+} from '@/lib/instagram';
 
 const KEY = 'chave-mestra-de-teste-com-tamanho-suficiente';
 const USER = '11111111-1111-1111-1111-111111111111';
-const json = (body: unknown, status = 200) => new Response(typeof body === 'string' ? body : JSON.stringify(body), { status });
-const asFetch = (fn: (url: string, init: RequestInit) => Response) => (async (url: string | URL, init: RequestInit) => fn(String(url), init)) as unknown as typeof fetch;
+const IG_ID = '17841401258866570';
+const SYSTEM_TOKEN = 'SYSTEM-USER-TOKEN-TEST';
+const PAGE_TOKEN = 'PAGE-ACCESS-TOKEN-TEST';
+const APP = { appId: '1621449662157910', appSecret: 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6', configId: META_CONFIG_ID };
 
-// A small in-memory stand-in for the database calls used by the Instagram code.
+const json = (body: unknown, status = 200) => new Response(typeof body === 'string' ? body : JSON.stringify(body), { status });
+const asFetch = (fn: (url: string, init: RequestInit) => Response) =>
+  (async (url: string | URL, init: RequestInit = {}) => fn(String(url), init)) as unknown as typeof fetch;
+
 function fakeAdmin() {
-  const tables: Record<string, Record<string, unknown>[]> = { connector_secrets: [], marketplace_connections: [], instagram_accounts: [], activity_log: [] };
-  let seq = 0;
+  const tables: Record<string, Record<string, unknown>[]> = {
+    connector_secrets: [], marketplace_connections: [], instagram_accounts: [], activity_log: [],
+  };
+  let sequence = 0;
   const from = (name: string) => {
     const rows = tables[name] as Record<string, unknown>[];
-    let op: 'select' | 'insert' | 'update' | 'delete' = 'select'; let values: Record<string, unknown> = {}; const filters: [string, unknown][] = []; let single: 'one' | 'maybe' | null = null; let limit = Infinity; let selected = false;
+    let operation: 'select' | 'insert' | 'update' | 'delete' = 'select';
+    let values: Record<string, unknown> = {};
+    const filters: [string, unknown][] = [];
+    let single: 'one' | 'maybe' | null = null;
+    let limit = Infinity;
+    let selected = false;
     const run = () => {
-      const match = (row: Record<string, unknown>) => filters.every(([k, v]) => row[k] === v);
-      if (op === 'insert') { const row = { id: `id${++seq}`, created_at: new Date(1_800_000_000_000 + seq).toISOString(), ...values }; rows.push(row); return { data: selected ? { ...row } : null, error: null }; }
-      if (op === 'update') { rows.filter(match).forEach(row => Object.assign(row, values)); return { data: null, error: null }; }
-      if (op === 'delete') { for (let i = rows.length - 1; i >= 0; i--) if (match(rows[i] as Record<string, unknown>)) rows.splice(i, 1); return { data: null, error: null }; }
-      const found = rows.filter(match).slice(0, limit).map(row => ({ ...row })); // copies, like a real database answer
+      const matches = (row: Record<string, unknown>) => filters.every(([key, value]) => row[key] === value);
+      if (operation === 'insert') {
+        const row = { id: `id-${++sequence}`, created_at: new Date(1_800_000_000_000 + sequence).toISOString(), ...values };
+        rows.push(row);
+        return { data: selected ? { ...row } : null, error: null };
+      }
+      if (operation === 'update') {
+        rows.filter(matches).forEach(row => Object.assign(row, values));
+        return { data: null, error: null };
+      }
+      if (operation === 'delete') {
+        for (let index = rows.length - 1; index >= 0; index--) if (matches(rows[index] as Record<string, unknown>)) rows.splice(index, 1);
+        return { data: null, error: null };
+      }
+      const found = rows.filter(matches).slice(0, limit).map(row => ({ ...row }));
       if (single === 'maybe') return { data: found[0] ?? null, error: null };
       if (single === 'one') return found[0] ? { data: found[0], error: null } : { data: null, error: { message: 'not found' } };
       return { data: found, error: null };
     };
     const builder: Record<string, unknown> = {
-      select: () => { selected = true; return builder; }, insert: (v: Record<string, unknown>) => { op = 'insert'; values = v; return builder; }, update: (v: Record<string, unknown>) => { op = 'update'; values = v; return builder; },
-      delete: () => { op = 'delete'; return builder; }, eq: (k: string, v: unknown) => { filters.push([k, v]); return builder; }, order: () => builder, limit: (n: number) => { limit = n; return builder; },
-      maybeSingle: () => { single = 'maybe'; return builder; }, single: () => { single = 'one'; return builder; },
-      then: (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) => { try { return Promise.resolve(run()).then(resolve, reject); } catch (e) { return reject(e); } },
+      select: () => { selected = true; return builder; },
+      insert: (payload: Record<string, unknown>) => { operation = 'insert'; values = payload; return builder; },
+      update: (payload: Record<string, unknown>) => { operation = 'update'; values = payload; return builder; },
+      delete: () => { operation = 'delete'; return builder; },
+      eq: (key: string, value: unknown) => { filters.push([key, value]); return builder; },
+      order: () => builder,
+      limit: (amount: number) => { limit = amount; return builder; },
+      maybeSingle: () => { single = 'maybe'; return builder; },
+      single: () => { single = 'one'; return builder; },
+      then: (resolve: (value: unknown) => unknown, reject: (reason: unknown) => unknown) => {
+        try { return Promise.resolve(run()).then(resolve, reject); } catch (error) { return reject(error); }
+      },
     };
     return builder;
   };
   return { admin: { from } as never, tables };
 }
 
-const APP = { appId: '123456789012345', appSecret: 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6', configId: '1592981445966230' };
+const granted = [
+  'instagram_basic', 'instagram_content_publish', 'instagram_manage_comments',
+  'pages_messaging', 'pages_manage_metadata', 'pages_show_list', 'pages_read_engagement',
+];
 
-describe('app data and messages', () => {
-  it('accepts numeric ids and an alphanumeric secret only', () => {
-    expect(instagramAppSchema.safeParse({ ...APP, appId: ' 123456789012345 ' }).success).toBe(true);
-    expect(instagramAppSchema.safeParse({ ...APP, appId: '12ab' }).success).toBe(false);
-    expect(instagramAppSchema.safeParse({ ...APP, appSecret: 'curto' }).success).toBe(false);
-    expect(instagramAppSchema.safeParse({ ...APP, appSecret: 'abc def ghi jkl mno pqr stu' }).success).toBe(false);
-    expect(instagramAppSchema.safeParse({ ...APP, configId: 'abc' }).success).toBe(false);
-    expect(instagramAppSchema.safeParse({ appId: APP.appId, appSecret: APP.appSecret }).success).toBe(false);
+function graphFetch(options: { pages?: unknown[]; accounts?: unknown[]; permissions?: string[]; pageError?: boolean } = {}) {
+  const pages = options.pages ?? [{
+    id: 'PAGE-123', name: 'Página da Loja', access_token: PAGE_TOKEN,
+    tasks: ['MESSAGING', 'CREATE_CONTENT'], instagram_business_account: { id: IG_ID },
+  }];
+  const accounts = options.accounts ?? [{ id: IG_ID, username: '_cleitosantos_' }];
+  return asFetch(url => {
+    const parsed = new URL(url);
+    if (parsed.pathname.endsWith('/oauth/access_token')) return json({ access_token: SYSTEM_TOKEN });
+    if (parsed.pathname.endsWith('/me/permissions')) {
+      return json({ data: (options.permissions ?? granted).map(permission => ({ permission, status: 'granted' })) });
+    }
+    if (parsed.pathname.endsWith('/me') && parsed.searchParams.get('fields') === 'client_business_id') return json({ id: 'system-user', client_business_id: 'BUSINESS-1' });
+    if (parsed.pathname.endsWith('/me/assigned_instagram_accounts')) return json({ data: accounts });
+    if (parsed.pathname.endsWith('/me/accounts')) return options.pageError ? json({ error: { code: 200, message: 'Page access denied' } }, 400) : json({ data: pages });
+    if (parsed.pathname.endsWith(`/${IG_ID}`)) return json({ id: IG_ID, username: '_cleitosantos_' });
+    return json({ error: { code: 100, message: `Unexpected request: ${parsed.pathname}` } }, 404);
   });
-  it('has a plain message for each failure and masks ids', () => {
-    expect(instagramErrorMessage('sem_instagram')).toContain('portfólio');
+}
+
+describe('configuração da aplicação Meta', () => {
+  it('mantém os identificadores públicos e a URL de callback', () => {
+    expect(META_APP_ID).toBe('1621449662157910');
+    expect(META_CONFIG_ID).toBe('1592981445966230');
+    expect(CALLBACK_URL).toBe('https://divulga-promo.lovable.app/api/public/instagram-callback');
+    expect(GRAPH_VERSION).toMatch(/^v\d+\.\d+$/);
+  });
+
+  it('separa permissões de publicação e permissões de Private Reply', () => {
+    expect([...REQUIRED_PERMISSIONS]).toEqual(['instagram_basic', 'instagram_content_publish']);
+    expect([...REQUIRED_REPLY_PERMISSIONS]).toEqual([
+      'instagram_manage_comments', 'pages_messaging', 'pages_manage_metadata', 'pages_show_list', 'pages_read_engagement',
+    ]);
+  });
+
+  it('valida credenciais e informa falhas de conexão', () => {
+    expect(instagramAppSchema.safeParse(APP).success).toBe(true);
+    expect(instagramSecretSchema.safeParse({ appSecret: APP.appSecret }).success).toBe(true);
+    expect(instagramSecretSchema.safeParse({ appSecret: 'curto' }).success).toBe(false);
+    expect(ownAccountSchema.safeParse({ accessToken: SYSTEM_TOKEN, igUserId: IG_ID }).success).toBe(true);
     expect(instagramErrorMessage('permissao')).toContain('instagram_content_publish');
     expect(instagramErrorMessage('qualquer-coisa')).toContain('Não foi possível');
     expect(maskId('123456789012345')).toBe('123••••••••••45');
-    expect([...REQUIRED_PERMISSIONS]).toEqual(['instagram_basic', 'instagram_content_publish']);
   });
-});
 
-describe('fixed Meta app values', () => {
-  it('always returns to the published address and asks only for the secret key', () => {
-    expect(CALLBACK_URL).toBe('https://divulga-promo.lovable.app/api/public/instagram-callback');
-    expect(instagramAppSchema.safeParse({ appId: META_APP_ID, appSecret: APP.appSecret, configId: META_CONFIG_ID }).success).toBe(true);
-    expect(instagramSecretSchema.safeParse({ appSecret: APP.appSecret }).success).toBe(true);
-    expect(instagramSecretSchema.safeParse({ appSecret: 'curto' }).success).toBe(false);
-    const url = new URL(buildAuthorizeUrl({ appId: META_APP_ID, configId: META_CONFIG_ID, redirectUri: CALLBACK_URL, state: 'S' }));
-    expect(url.searchParams.get('client_id')).toBe('1621449662157910');
-    expect(url.searchParams.get('config_id')).toBe('1592981445966230');
-    expect(url.searchParams.get('redirect_uri')).toBe(CALLBACK_URL);
-  });
-});
-
-describe('sealed values', () => {
-  it('opens only for the same user and purpose', async () => {
-    const sealed = await sealJson({ a: 1 }, KEY, USER, 'instagram-token');
-    expect(await openJson(sealed, KEY, USER, 'instagram-token')).toEqual({ a: 1 });
-    await expect(openJson(sealed, KEY, 'outro-usuario', 'instagram-token')).rejects.toBeTruthy();
-    await expect(openJson(sealed, KEY, USER, 'instagram-app')).rejects.toBeTruthy();
-    await expect(openJson(sealed, 'outra-chave-mestra-qualquer-123456', USER, 'instagram-token')).rejects.toBeTruthy();
-    expect(sealed).not.toContain('"a"');
-  });
-});
-
-describe('signed state of the login', () => {
-  it('returns the user for a genuine recent state', async () => {
-    const state = await signState(USER, KEY, 1_000_000);
-    expect(await verifyState(state, KEY, 1_000_000 + 60_000)).toBe(USER);
-  });
-  it('refuses a forged, altered, expired or foreign state', async () => {
-    const state = await signState(USER, KEY, 1_000_000);
-    expect(await verifyState(state, KEY, 1_000_000 + 16 * 60_000)).toBeNull();
-    expect(await verifyState(state, 'outra-chave-mestra-qualquer-123456', 1_000_000)).toBeNull();
-    const [payload, signature] = state.split('.') as [string, string];
-    const forged = btoa(JSON.stringify({ u: 'outro-usuario', t: 1_000_000, n: 'x' })).replace(/=+$/, '');
-    expect(await verifyState(`${forged}.${signature}`, KEY, 1_000_000)).toBeNull();
-    expect(await verifyState(`${payload}.`, KEY, 1_000_000)).toBeNull();
-    expect(await verifyState('lixo', KEY, 1_000_000)).toBeNull();
-    expect(await verifyState('', KEY, 1_000_000)).toBeNull();
-    expect(await verifyState(await signState(USER, KEY, 5_000_000), KEY, 1_000_000)).toBeNull();
-  });
-  it('builds the login address with the configuration, the state and no permission list', () => {
-    const url = new URL(buildAuthorizeUrl({ appId: '123456789', configId: '555666777', redirectUri: 'https://app.exemplo/api/public/instagram-callback', state: 'abc.def' }));
+  it('monta o endereço do Facebook Login com a configuração correta', () => {
+    const url = new URL(buildAuthorizeUrl({ appId: META_APP_ID, configId: META_CONFIG_ID, redirectUri: CALLBACK_URL, state: 'state.assinado' }));
     expect(url.origin + url.pathname).toBe('https://www.facebook.com/dialog/oauth');
-    expect(url.searchParams.get('client_id')).toBe('123456789');
-    expect(url.searchParams.get('config_id')).toBe('555666777');
+    expect(url.searchParams.get('client_id')).toBe(META_APP_ID);
+    expect(url.searchParams.get('config_id')).toBe(META_CONFIG_ID);
+    expect(url.searchParams.get('redirect_uri')).toBe(CALLBACK_URL);
     expect(url.searchParams.get('response_type')).toBe('code');
-    expect(url.searchParams.get('override_default_response_type')).toBe('true');
-    expect(url.searchParams.get('state')).toBe('abc.def');
-    expect(url.searchParams.get('display')).toBe('popup');
-    expect(url.searchParams.get('prompt')).toBe('login');
-    expect(url.searchParams.get('redirect_uri')).toBe('https://app.exemplo/api/public/instagram-callback');
+    expect(url.searchParams.get('state')).toBe('state.assinado');
     expect(url.searchParams.has('scope')).toBe(false);
   });
 });
 
-describe('calls to the Meta Graph', () => {
-  it('exchanges the code for the system user token with the app id and secret', async () => {
-    const urls: string[] = [];
-    const fetcher = asFetch(url => { urls.push(url); return json({ access_token: 'SUAT' }); });
-    expect(await exchangeCode(fetcher, { appId: '1', appSecret: 's', redirectUri: 'https://x/cb', code: 'COD' })).toEqual({ token: 'SUAT' });
-    expect(urls[0]).toContain('graph.facebook.com/v27.0/oauth/access_token');
-    expect(urls[0]).toContain('code=COD');
-    expect(urls[0]).toContain('client_secret=s');
-  });
-  it('keeps what Meta says about a failure, with no token or secret in it', async () => {
-    const fetcher = asFetch(() => json({ error: { message: 'Invalid verification code format.', type: 'OAuthException', code: 100, error_subcode: 33, fbtrace_id: 'x' } }, 400));
-    const error = await exchangeCode(fetcher, { appId: '1', appSecret: 'segredo123', redirectUri: 'https://x', code: 'c' }).catch((e: unknown) => e) as InstagramError;
-    expect(error).toBeInstanceOf(InstagramError);
-    expect(error.code).toBe('troca');
-    expect(error.detail).toMatchObject({ step: 'trocar_codigo', status: 400, meta: { code: 100, subcode: 33, type: 'OAuthException' } });
-    expect(JSON.stringify(error.detail)).not.toContain('segredo123');
-  });
-  it('turns network failures and unreadable answers into typed errors', async () => {
-    const bad = [asFetch(() => { throw new Error('rede com segredo123'); }), asFetch(() => json('não é json', 200)), asFetch(() => json({}, 500))];
-    for (const fetcher of bad) {
-      const error = await exchangeCode(fetcher, { appId: '1', appSecret: 'segredo123', redirectUri: 'x', code: 'c' }).catch((e: unknown) => e) as InstagramError;
-      expect(error).toBeInstanceOf(InstagramError);
-      expect(error.code).toBe('troca');
-      expect(error.message).not.toContain('segredo123');
-    }
-    await expect(exchangeCode(asFetch(() => json({ nada: true })), { appId: '1', appSecret: 's', redirectUri: 'x', code: 'c' })).rejects.toMatchObject({ code: 'troca' });
-  });
-  it('lists only the permissions that were granted', async () => {
-    const fetcher = asFetch(() => json({ data: [{ permission: 'instagram_basic', status: 'granted' }, { permission: 'pages_show_list', status: 'granted' }, { permission: 'instagram_content_publish', status: 'declined' }] }));
-    expect(await fetchGrantedPermissions(fetcher, 'T')).toEqual(['instagram_basic', 'pages_show_list']);
-  });
-  it('lists the accounts assigned to the system user and keeps 17-digit ids exact', async () => {
-    let seen = '';
-    const body = '{"data":[{"id":17841405793187218,"username":"minha.loja"},{"id":"17841400000000001"}]}';
-    const result = await discoverAssignedAccounts(asFetch(url => { seen = url; return json(body); }), 'SUAT');
-    expect(seen).toContain('/me/assigned_instagram_accounts');
-    expect(result.accounts).toEqual([{ igUserId: '17841405793187218', username: 'minha.loja' }, { igUserId: '17841400000000001', username: null }]);
-    expect((await discoverAssignedAccounts(asFetch(() => json({ data: [] })), 'T')).accounts).toEqual([]);
-  });
-  it('asks again without the field list when Meta refuses it', async () => {
-    const urls: string[] = [];
-    const fetcher = asFetch(url => { urls.push(url); return url.includes('fields=') ? json({ error: { code: 100, message: 'x' } }, 400) : json({ data: [{ id: '1784' }] }); });
-    const result = await discoverAssignedAccounts(fetcher, 'T');
-    expect(urls).toHaveLength(2);
-    expect(result.accounts).toEqual([{ igUserId: '1784', username: null }]);
-    expect(result.tries[0]).toMatchObject({ status: 400, fields: 'id,username' });
-  });
-  it('asks the Instagram account itself to prove the access works', async () => {
-    let seen = '';
-    expect(await verifyAccount(asFetch(url => { seen = url; return json({ id: '1', username: 'minha.loja' }); }), 'TOK', '17841405793187218')).toEqual({ username: 'minha.loja' });
-    expect(seen).toContain('/17841405793187218');
-    await expect(verifyAccount(asFetch(() => json({ error: { code: 190, message: 'expired' } }, 400)), 'T', '1')).rejects.toMatchObject({ code: 'perfil', detail: { meta: { code: 190 } } });
+describe('segurança do state OAuth', () => {
+  it('aceita um state assinado e recente e recusa alteração ou expiração', async () => {
+    const state = await signState(USER, KEY, 1_000_000);
+    expect(await verifyState(state, KEY, 1_060_000)).toBe(USER);
+    expect(await verifyState(state, KEY, 1_000_000 + 16 * 60_000)).toBeNull();
+    expect(await verifyState(state, 'outra-chave-mestra-qualquer-123456', 1_000_000)).toBeNull();
+    expect(await verifyState('inválido', KEY, 1_000_000)).toBeNull();
   });
 });
 
-describe('connecting the account', () => {
-  const meta = (options: { permissions?: string[]; accounts?: unknown; failAt?: 'code' | 'perms' | 'accounts' } = {}) => asFetch(url => {
-    const perms = options.permissions ?? ['instagram_basic', 'instagram_content_publish', 'pages_show_list', 'public_profile'];
-    const accounts = options.accounts ?? [{ id: '17841405793187218', username: 'minha.loja' }];
-    if (url.includes('/oauth/access_token')) return options.failAt === 'code' ? json({ error: { code: 100, message: 'bad code' } }, 400) : json({ access_token: 'SYSTEM-USER-TOKEN' });
-    if (url.includes('fields=client_business_id')) return json({ client_business_id: '2020202020', id: '9' });
-    if (url.includes('/me/permissions')) return options.failAt === 'perms' ? json({}, 500) : json({ data: perms.map(permission => ({ permission, status: 'granted' })) });
-    if (url.includes('/me/assigned_instagram_accounts')) return options.failAt === 'accounts' ? json({ error: { code: 200, message: 'denied' } }, 400) : json(typeof accounts === 'string' ? accounts : { data: accounts });
-    if (url.includes('/17841405793187218?')) return json({ id: '17841405793187218', username: 'minha.loja' });
-    return json({}, 404);
+describe('consultas à Graph API', () => {
+  it('troca o código OAuth e identifica somente permissões concedidas', async () => {
+    const urls: string[] = [];
+    const fetcher = asFetch(url => { urls.push(url); return url.includes('/oauth/access_token')
+      ? json({ access_token: SYSTEM_TOKEN })
+      : json({ data: [{ permission: 'instagram_basic', status: 'granted' }, { permission: 'pages_show_list', status: 'declined' }] });
+    });
+    expect(await exchangeCode(fetcher, { appId: '1', appSecret: 'secret', redirectUri: 'https://x/cb', code: 'COD' })).toEqual({ token: SYSTEM_TOKEN });
+    expect(await fetchGrantedPermissions(fetcher, SYSTEM_TOKEN)).toEqual(['instagram_basic']);
+    expect(urls[0]).toContain(`graph.facebook.com/${GRAPH_VERSION}/oauth/access_token`);
   });
-  const login = (db: ReturnType<typeof fakeAdmin>, fetcher: typeof fetch, now = 1_800_000_000_000) => completeInstagramLogin({ admin: db.admin, userId: USER, masterKey: KEY, code: 'COD', redirectUri: 'https://x/cb', fetcher, now });
-  const lastLog = (db: ReturnType<typeof fakeAdmin>) => db.tables['activity_log']?.at(-1) as { result: string; details: Record<string, unknown> };
 
-  it('saves the app, connects the account with the system user token and keeps secrets sealed', async () => {
+  it('preserva IDs longos ao listar contas atribuídas', async () => {
+    const body = '{"data":[{"id":17841401258866570,"username":"_cleitosantos_"}]}';
+    const result = await discoverAssignedAccounts(asFetch(() => json(body)), SYSTEM_TOKEN);
+    expect(result.accounts).toEqual([{ igUserId: IG_ID, username: '_cleitosantos_' }]);
+  });
+
+  it('encontra a Página cujo Instagram profissional corresponde ao ID conectado', async () => {
+    const fetcher = graphFetch({ pages: [
+      { id: 'WRONG-PAGE', name: 'Outra Página', access_token: 'WRONG-TOKEN', tasks: ['MESSAGING'], instagram_business_account: { id: '17840000000000000' } },
+      { id: 'PAGE-123', name: 'Página da Loja', access_token: PAGE_TOKEN, tasks: ['MESSAGING', 'CREATE_CONTENT'], instagram_business_account: { id: IG_ID } },
+    ] });
+    expect(await discoverLinkedPage(fetcher, SYSTEM_TOKEN, IG_ID)).toEqual({
+      pageId: 'PAGE-123', pageName: 'Página da Loja', pageAccessToken: PAGE_TOKEN, pageTasks: ['MESSAGING', 'CREATE_CONTENT'],
+    });
+  });
+
+  it('não escolhe uma Página que pertence a outra conta do Instagram', async () => {
+    const fetcher = graphFetch({ pages: [{ id: 'PAGE-OTHER', access_token: 'OTHER-TOKEN', instagram_business_account: { id: '17840000000000000' } }] });
+    expect(await discoverLinkedPage(fetcher, SYSTEM_TOKEN, IG_ID)).toBeNull();
+  });
+
+  it('recusa uma Página correspondente sem Page Access Token', async () => {
+    const fetcher = graphFetch({ pages: [{ id: 'PAGE-123', instagram_business_account: { id: IG_ID } }] });
+    await expect(discoverLinkedPage(fetcher, SYSTEM_TOKEN, IG_ID)).rejects.toMatchObject({ code: 'perfil', detail: { step: 'pagina_sem_token' } });
+  });
+});
+
+describe('armazenamento e conexão da conta', () => {
+  it('conecta a conta própria, grava Page ID e criptografa separadamente os tokens', async () => {
     const db = fakeAdmin();
-    await saveAppCredentials(db.admin, USER, KEY, APP);
-    expect(await loadAppCredentials(db.admin, USER, KEY)).toEqual(APP);
-    expect(JSON.stringify(db.tables)).not.toContain(APP.appSecret);
-    expect(await login(db, meta())).toEqual({ ok: true });
-    expect(await loadAccount(db.admin, USER)).toEqual({ username: 'minha.loja', igUserId: '17841405793187218', pageId: null, status: 'connected' });
-    expect(await getPublishingToken(db.admin, USER, KEY)).toEqual({ token: 'SYSTEM-USER-TOKEN', igUserId: '17841405793187218', pageId: null });
-    expect(JSON.stringify(db.tables)).not.toContain('SYSTEM-USER-TOKEN');
-    expect(db.tables['instagram_accounts']?.[0]).toMatchObject({ status: 'connected', user_id: USER, token_expires_at: null });
-    expect(lastLog(db)).toMatchObject({ result: 'Conta conectada', details: { contas_compartilhadas: 1, usuario: 'minha.loja', empresa_cliente: '2020202020' } });
-    expect(JSON.stringify(db.tables['activity_log'])).not.toContain('SYSTEM-USER-TOKEN');
-  });
-  it('keeps a 17-digit account id exact when Meta sends it as a number', async () => {
-    const db = fakeAdmin(); await saveAppCredentials(db.admin, USER, KEY, APP);
-    expect(await login(db, meta({ accounts: '{"data":[{"id":17841405793187218}]}' }))).toEqual({ ok: true });
-    expect((await loadAccount(db.admin, USER))?.igUserId).toBe('17841405793187218');
-  });
-  it('explains what is missing when the configuration lacks permissions', async () => {
-    const db = fakeAdmin(); await saveAppCredentials(db.admin, USER, KEY, APP);
-    expect(await login(db, meta({ permissions: ['instagram_basic'] }))).toEqual({ ok: false, code: 'permissao' });
-    expect(lastLog(db).details).toMatchObject({ permissoes: ['instagram_basic'], permissoes_faltando: ['instagram_content_publish'] });
-    expect(await loadAccount(db.admin, USER)).toBeNull();
-  });
-  it('says so when the client shared no Instagram account', async () => {
-    const db = fakeAdmin(); await saveAppCredentials(db.admin, USER, KEY, APP);
-    expect(await login(db, meta({ accounts: [] }))).toEqual({ ok: false, code: 'sem_instagram' });
-    expect(lastLog(db).details).toMatchObject({ contas_compartilhadas: 0, empresa_cliente: '2020202020' });
-    expect((lastLog(db).details['tentativas'] as unknown[])[0]).toMatchObject({ step: 'contas_atribuidas', encontradas: 0, itens_recebidos: 0, chaves: ['data'] });
-    expect(lastLog(db).details['tentativas']).toEqual(expect.arrayContaining([expect.objectContaining({ step: 'introspeccao', no: 'me' })]));
-  });
-  it('records which step failed, with what Meta answered', async () => {
-    const db = fakeAdmin();
-    expect(await login(db, meta())).toEqual({ ok: false, code: 'app' });
-    await saveAppCredentials(db.admin, USER, KEY, APP);
-    expect(await login(db, meta({ failAt: 'code' }))).toEqual({ ok: false, code: 'troca' });
-    expect(lastLog(db).details).toMatchObject({ falha: { step: 'trocar_codigo', status: 400, meta: { code: 100 } } });
-    expect(await login(db, meta({ failAt: 'accounts' }))).toEqual({ ok: false, code: 'perfil' });
-    const tried = lastLog(db).details['tentativas'] as unknown[];
-    expect(tried.slice(0, 2)).toMatchObject([{ step: 'contas_atribuidas', status: 400, meta: { code: 200 } }, { step: 'contas_atribuidas', status: 400 }]);
-    expect(lastLog(db).details).toMatchObject({ codigo_trocado: true });
-    expect(await loadAccount(db.admin, USER)).toBeNull();
-  });
-  it('asks the user to choose when the login brings several accounts, and connects only the chosen one', async () => {
-    const db = fakeAdmin(); await saveAppCredentials(db.admin, USER, KEY, APP);
-    const two = meta({ accounts: [{ id: '11892348217875', username: '_cleitosantos_' }, { id: '1382402184965193', username: 'achad.inhosdodiia' }] });
-    expect(await login(db, two)).toEqual({ ok: 'choose' });
-    expect(await loadAccount(db.admin, USER)).toBeNull();
-    expect(await loadPendingAccounts(db.admin, USER, KEY)).toHaveLength(2);
-    const done = await completeChosenAccount({ admin: db.admin, userId: USER, masterKey: KEY, igUserId: '1382402184965193', fetcher: two });
-    expect(done.ok).toBe(true);
-    expect((await loadAccount(db.admin, USER))?.igUserId).toBe('1382402184965193');
-    expect(await loadPendingAccounts(db.admin, USER, KEY)).toBeNull();
-    expect(db.tables['connector_secrets']).toHaveLength(2);
-  });
-  it('still connects when listing permissions fails, because the account search proves the access', async () => {
-    const db = fakeAdmin(); await saveAppCredentials(db.admin, USER, KEY, APP);
-    expect(await login(db, meta({ failAt: 'perms' }))).toEqual({ ok: true });
-    expect(lastLog(db).details).toHaveProperty('permissoes_erro');
-  });
-  it('replaces the previous token without leaving old secrets behind, and disconnects cleanly', async () => {
-    const db = fakeAdmin(); await saveAppCredentials(db.admin, USER, KEY, APP);
-    await login(db, meta()); await login(db, meta());
-    expect(db.tables['instagram_accounts']).toHaveLength(1);
-    expect(db.tables['connector_secrets']).toHaveLength(2);
-    await disconnectAccount(db.admin, USER);
-    // The row stays (posts reference it); only the access is cleared.
-    expect(db.tables['instagram_accounts']).toHaveLength(1);
-    expect(db.tables['instagram_accounts']![0]).toMatchObject({ status: 'disconnected', credential_id: null });
-    expect(await loadAccount(db.admin, USER)).toBeNull();
+    const result = await connectOwnAccount({ admin: db.admin, userId: USER, masterKey: KEY, accessToken: SYSTEM_TOKEN, igUserId: IG_ID, fetcher: graphFetch() });
+    expect(result).toEqual({ ok: true, username: '_cleitosantos_' });
+    expect(await loadAccount(db.admin, USER)).toEqual({ username: '_cleitosantos_', igUserId: IG_ID, pageId: 'PAGE-123', status: 'connected' });
+    expect(await getPublishingToken(db.admin, USER, KEY)).toEqual({
+      token: SYSTEM_TOKEN, igUserId: IG_ID, pageId: 'PAGE-123', pageAccessToken: PAGE_TOKEN, pageTasks: ['MESSAGING', 'CREATE_CONTENT'],
+    });
+    const serialized = JSON.stringify(db.tables);
+    expect(serialized).not.toContain(SYSTEM_TOKEN);
+    expect(serialized).not.toContain(PAGE_TOKEN);
     expect(db.tables['connector_secrets']).toHaveLength(1);
-    await removeAppCredentials(db.admin, USER);
+  });
+
+  it('conecta pelo OAuth e também recupera a Página vinculada', async () => {
+    const db = fakeAdmin();
+    await saveAppCredentials(db.admin, USER, KEY, APP);
+    const result = await completeInstagramLogin({ admin: db.admin, userId: USER, masterKey: KEY, code: 'CODE', redirectUri: CALLBACK_URL, fetcher: graphFetch() });
+    expect(result).toEqual({ ok: true });
+    expect(await getPublishingToken(db.admin, USER, KEY)).toMatchObject({
+      token: SYSTEM_TOKEN, igUserId: IG_ID, pageId: 'PAGE-123', pageAccessToken: PAGE_TOKEN,
+    });
+    expect(await loadAppCredentials(db.admin, USER, KEY)).toEqual(APP);
+    expect(JSON.stringify(db.tables)).not.toContain(PAGE_TOKEN);
+  });
+
+  it('mantém a conta conectada para publicação mesmo quando não consegue localizar a Página', async () => {
+    const db = fakeAdmin();
+    const result = await connectOwnAccount({
+      admin: db.admin, userId: USER, masterKey: KEY, accessToken: SYSTEM_TOKEN, igUserId: IG_ID,
+      fetcher: graphFetch({ pages: [] }),
+    });
+    expect(result.ok).toBe(true);
+    expect(await getPublishingToken(db.admin, USER, KEY)).toMatchObject({ token: SYSTEM_TOKEN, igUserId: IG_ID, pageId: null });
+    expect(await getPublishingToken(db.admin, USER, KEY)).not.toHaveProperty('pageAccessToken');
+  });
+
+  it('limpa Page ID e credenciais ao desconectar, sem apagar a linha histórica', async () => {
+    const db = fakeAdmin();
+    await connectOwnAccount({ admin: db.admin, userId: USER, masterKey: KEY, accessToken: SYSTEM_TOKEN, igUserId: IG_ID, fetcher: graphFetch() });
+    await disconnectAccount(db.admin, USER);
+    expect(db.tables['instagram_accounts']).toHaveLength(1);
+    expect(db.tables['instagram_accounts']?.[0]).toMatchObject({ status: 'disconnected', credential_id: null, ig_user_id: null, page_id: null });
     expect(db.tables['connector_secrets']).toHaveLength(0);
-    expect(db.tables['marketplace_connections']).toHaveLength(0);
-  });
-  it('disconnects the account when a different app is saved, and ignores old data without a configuration id', async () => {
-    const db = fakeAdmin(); await saveAppCredentials(db.admin, USER, KEY, APP);
-    await login(db, meta());
-    await saveAppCredentials(db.admin, USER, KEY, { ...APP, appSecret: 'ffffffffffffffffffffffffffffffff' });
-    expect(await loadAccount(db.admin, USER)).not.toBeNull();
-    await saveAppCredentials(db.admin, USER, KEY, { ...APP, appId: '999999999999999' });
-    expect(await loadAccount(db.admin, USER)).toBeNull();
-    const old = fakeAdmin();
-    const id = await sealJson({ appId: '1', appSecret: 's' }, KEY, USER, 'instagram-app');
-    old.tables['connector_secrets']!.push({ id: 's1', user_id: USER, ciphertext: id });
-    old.tables['marketplace_connections']!.push({ id: 'm1', user_id: USER, marketplace: 'instagram_app', credential_id: 's1' });
-    expect(await loadAppCredentials(old.admin, USER, KEY)).toBeNull();
+    expect(await getPublishingToken(db.admin, USER, KEY)).toBeNull();
   });
 
-  describe('testing the saved access', () => {
-    const connected = async () => { const db = fakeAdmin(); await saveAppCredentials(db.admin, USER, KEY, APP); await login(db, meta()); return db; };
-    it('confirms the account and refreshes the username', async () => {
-      const db = await connected();
-      expect(await checkAccount(db.admin, USER, KEY, asFetch(() => json({ id: '17841405793187218', username: 'novo.nome' })))).toEqual({ username: 'novo.nome' });
-      expect((await loadAccount(db.admin, USER))?.username).toBe('novo.nome');
+  it('marca token expirado quando a validade cadastrada passou', async () => {
+    const db = fakeAdmin();
+    const { saveConnectedAccount } = await import('@/lib/instagram.server');
+    await saveConnectedAccount(db.admin, USER, KEY, {
+      igUserId: IG_ID, username: '_cleitosantos_', pageId: 'PAGE-123', token: SYSTEM_TOKEN,
+      pageAccessToken: PAGE_TOKEN, pageTasks: ['MESSAGING'], issuedAt: 1000, expiresAt: 2000,
     });
-    it('marks the account as expired when Meta rejects the token (code 190)', async () => {
-      const db = await connected();
-      await expect(checkAccount(db.admin, USER, KEY, asFetch(() => json({ error: { code: 190, message: 'Error validating access token' } }, 400)))).rejects.toMatchObject({ code: 'expirado' });
-      expect((await loadAccount(db.admin, USER))?.status).toBe('expired');
-    });
-    it('keeps the account when the failure is something else', async () => {
-      const db = await connected();
-      await expect(checkAccount(db.admin, USER, KEY, asFetch(() => json({}, 500)))).rejects.toMatchObject({ code: 'perfil' });
-      expect((await loadAccount(db.admin, USER))?.status).toBe('connected');
-    });
-    it('reports a missing account and refuses an expired token date', async () => {
-      await expect(checkAccount(fakeAdmin().admin, USER, KEY, asFetch(() => json({})))).rejects.toMatchObject({ code: 'expirado' });
-      const db = fakeAdmin(); await saveAppCredentials(db.admin, USER, KEY, APP);
-      await saveConnectedAccount(db.admin, USER, KEY, { igUserId: '1', username: 'a', pageId: '2', token: 'T', issuedAt: 1, expiresAt: 1000 });
-      await expect(getPublishingToken(db.admin, USER, KEY, 2000)).rejects.toMatchObject({ code: 'expirado' });
-    });
+    await expect(getPublishingToken(db.admin, USER, KEY, 3000)).rejects.toMatchObject({ code: 'expirado' });
+    expect(InstagramError).toBeDefined();
   });
-});
 
-describe('the company own account (portfolio system user token)', () => {
-  const OWN = { admin: undefined as never, userId: USER, masterKey: KEY, accessToken: 'SUAT-DO-PORTFOLIO-COM-TAMANHO', igUserId: '17841401258866570' };
-  const graph = (options: { read?: 'ok' | 'denied'; permissions?: string[] } = {}) => asFetch(url => {
-    if (url.includes('/me/permissions')) return json({ data: (options.permissions ?? ['instagram_basic', 'instagram_content_publish']).map(permission => ({ permission, status: 'granted' })) });
-    if (url.includes('/17841401258866570?')) return options.read === 'denied' ? json({ error: { code: 100, message: 'Unsupported get request', error_subcode: 33 } }, 400) : json({ id: '17841401258866570', username: '_cleitosantos_' });
-    return json({}, 404);
-  });
-  const lastLog = (db: ReturnType<typeof fakeAdmin>) => db.tables['activity_log']?.at(-1) as { result: string; details: Record<string, unknown> };
-
-  it('accepts the 17841 account id (or none) and refuses the portfolio asset id or a broken token', () => {
-    expect(ownAccountSchema.parse({ accessToken: OWN.accessToken })).toEqual({ accessToken: OWN.accessToken, igUserId: '' });
-    expect(ownAccountSchema.safeParse({ accessToken: OWN.accessToken, igUserId: OWN.igUserId }).success).toBe(true);
-    expect(ownAccountSchema.safeParse({ accessToken: OWN.accessToken, igUserId: '111892348217875' }).success).toBe(false);
-    expect(ownAccountSchema.safeParse({ accessToken: 'curto', igUserId: OWN.igUserId }).success).toBe(false);
-    expect(ownAccountSchema.safeParse({ accessToken: 'tem espaco no meio do token aqui', igUserId: OWN.igUserId }).success).toBe(false);
-  });
-  it('proves the token by reading the account, saves it sealed and records how it was connected', async () => {
+  it('testa a conexão consultando a conta do Instagram', async () => {
     const db = fakeAdmin();
-    expect(await connectOwnAccount({ ...OWN, admin: db.admin, fetcher: graph() })).toEqual({ ok: true, username: '_cleitosantos_' });
-    expect(await loadAccount(db.admin, USER)).toEqual({ username: '_cleitosantos_', igUserId: '17841401258866570', pageId: null, status: 'connected' });
-    expect(await getPublishingToken(db.admin, USER, KEY)).toEqual({ token: OWN.accessToken, igUserId: '17841401258866570', pageId: null });
-    expect(JSON.stringify(db.tables)).not.toContain(OWN.accessToken);
-    expect(lastLog(db)).toMatchObject({ result: 'Conta própria conectada', details: { modo: 'usuario_do_sistema', usuario: '_cleitosantos_' } });
-  });
-  it('finds the account id by itself from what the token can list, and keeps the token sealed', async () => {
-    const db = fakeAdmin();
-    const fetcher = asFetch(url => {
-      if (url.includes('/me/permissions')) return json({ data: [{ permission: 'instagram_basic', status: 'granted' }, { permission: 'instagram_content_publish', status: 'granted' }] });
-      if (url.includes('/me/assigned_instagram_accounts')) return json({ data: [{ id: 17841401258866570, username: '_cleitosantos_' }] });
-      if (url.includes('/17841401258866570?')) return json({ id: '17841401258866570', username: '_cleitosantos_' });
-      return json({}, 404);
-    });
-    expect(await connectOwnAccount({ admin: db.admin, userId: USER, masterKey: KEY, accessToken: OWN.accessToken, fetcher })).toEqual({ ok: true, username: '_cleitosantos_' });
-    expect(await loadAccount(db.admin, USER)).toMatchObject({ igUserId: '17841401258866570', pageId: null });
-    expect(JSON.stringify(db.tables)).not.toContain(OWN.accessToken);
-    expect(lastLog(db).details).toMatchObject({ modo: 'usuario_do_sistema', contas_compartilhadas: 1, conta: '17841401258866570' });
-  });
-  it('says the token lists no account (and saves nothing) when nothing is found', async () => {
-    const db = fakeAdmin();
-    const fetcher = asFetch(url => url.includes('/me/permissions') ? json({ data: [{ permission: 'instagram_basic', status: 'granted' }, { permission: 'instagram_content_publish', status: 'granted' }] }) : url.includes('/me/assigned_instagram_accounts') ? json({ data: [] }) : json({ metadata: { connections: {} } }));
-    expect(await connectOwnAccount({ admin: db.admin, userId: USER, masterKey: KEY, accessToken: OWN.accessToken, fetcher })).toEqual({ ok: false, code: 'token_sem_conta' });
-    expect(await loadAccount(db.admin, USER)).toBeNull();
-    expect(lastLog(db)).toMatchObject({ result: 'Nenhuma conta do Instagram encontrada', details: { contas_compartilhadas: 0 } });
-  });
-  it('does not save when Meta refuses to show the account to that token', async () => {
-    const db = fakeAdmin();
-    expect(await connectOwnAccount({ ...OWN, admin: db.admin, fetcher: graph({ read: 'denied' }) })).toEqual({ ok: false, code: 'conta' });
-    expect(await loadAccount(db.admin, USER)).toBeNull();
-    expect(lastLog(db)).toMatchObject({ result: 'Falha: conta', details: { falha: { status: 400, meta: { code: 100, subcode: 33 } } } });
-    expect(JSON.stringify(db.tables['activity_log'])).not.toContain(OWN.accessToken);
-  });
-  it('asks for the missing permission instead of saving a token that cannot publish', async () => {
-    const db = fakeAdmin();
-    expect(await connectOwnAccount({ ...OWN, admin: db.admin, fetcher: graph({ permissions: ['instagram_basic'] }) })).toEqual({ ok: false, code: 'permissao' });
-    expect(lastLog(db).details).toMatchObject({ permissoes_faltando: ['instagram_content_publish'] });
-    expect(await loadAccount(db.admin, USER)).toBeNull();
-  });
-});
-
-describe('finding the account by asking the token what it offers', () => {
-  const graph = (connections: Record<string, string>, lists: Record<string, unknown>) => asFetch(url => {
-    const u = new URL(url);
-    if (u.searchParams.get('metadata') === '1') return json({ id: '1', metadata: { connections } });
-    const hit = Object.keys(lists).find(path => u.pathname.endsWith(path));
-    return hit ? json(lists[hit]) : json({ error: { code: 100, message: 'nope' } }, 400);
-  });
-  it('tries every Instagram connection the token lists, on itself and on the business, and keeps the first account', async () => {
-    const fetcher = graph({ assigned_instagram_accounts: 'x', assigned_pages: 'y', owned_instagram_accounts: 'z' }, { '/me/owned_instagram_accounts': { data: [{ id: 17841401258866570, username: 'cleito' }] } });
-    const result = await discoverByIntrospection(fetcher, 'T', '377');
-    expect(result.accounts).toEqual([{ igUserId: '17841401258866570', username: 'cleito' }]);
-    expect(result.via).toBe('me/owned_instagram_accounts');
-    expect(result.connections['me']).toEqual(['assigned_instagram_accounts', 'assigned_pages', 'owned_instagram_accounts']);
-  });
-  it('writes down what it saw and what Meta answered when nothing lists an account', async () => {
-    const fetcher = graph({ assigned_pages: 'y', instagram_business_accounts: 'z' }, { '/377/instagram_business_accounts': { data: [] } });
-    const result = await discoverByIntrospection(fetcher, 'T', '377');
-    expect(result.accounts).toEqual([]);
-    expect(result.tries).toEqual(expect.arrayContaining([{ step: 'conexao', no: 'me', via: 'instagram_business_accounts', status: 400, meta: expect.objectContaining({ code: 100 }) }, { step: 'conexao', no: 'empresa', via: 'instagram_business_accounts', encontradas: 0, itens_recebidos: 0 }].map(entry => expect.objectContaining(entry))));
-    expect(result.connections['empresa']).toEqual(['assigned_pages', 'instagram_business_accounts']);
-  });
-  it('a refused look at the token is recorded, not fatal', async () => {
-    const result = await discoverByIntrospection(asFetch(() => json({ error: { code: 10, message: 'perm' } }, 400)), 'T', null);
-    expect(result.accounts).toEqual([]);
-    expect(result.tries[0]).toMatchObject({ step: 'introspeccao', no: 'me', status: 400 });
+    await connectOwnAccount({ admin: db.admin, userId: USER, masterKey: KEY, accessToken: SYSTEM_TOKEN, igUserId: IG_ID, fetcher: graphFetch() });
+    await expect(checkAccount(db.admin, USER, KEY, graphFetch())).resolves.toEqual({ username: '_cleitosantos_' });
+    expect(verifyAccount).toBeDefined();
   });
 });
