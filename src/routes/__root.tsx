@@ -14,6 +14,7 @@ import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
 import { supabase } from '@/integrations/supabase/client';
 import { Button } from '@/components/ui/button';
+import { CookieNotice } from '@/components/cookie-notice';
 
 function NotFoundComponent() {
   return (
@@ -136,6 +137,7 @@ function RootComponent() {
     <QueryClientProvider client={queryClient}>
       {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
       <Outlet />
+      <CookieNotice />
     </QueryClientProvider>
   );
 }
