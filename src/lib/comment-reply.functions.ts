@@ -63,7 +63,7 @@ export const syncCommentsFn = createServerFn({ method: 'POST' }).middleware([req
     const r = await syncRecentComments(db, { userId: context.userId, masterKey: masterKey() });
     if (r.problem) return { status: 'error', message: r.problem };
     const sent = r.send?.sent ?? 0; const failed = r.send?.failed ?? 0; const waiting = r.send?.waiting ?? 0;
-    const head = `Publicações verificadas: ${r.posts}. Comentários lidos: ${r.comments}, das últimas 2 horas: ${r.recent}, com o gatilho: ${r.matched}.`;
+    const head = `Publicações verificadas: ${r.posts}${r.skipped ? ` (${r.skipped} de outra conta, ignoradas)` : ''}. Comentários lidos: ${r.comments}, das últimas 2 horas: ${r.recent}, com o gatilho: ${r.matched}.`;
     if (!r.matched) return { status: 'ok', message: `${head} Nenhum comentário novo com "EU QUERO" de outra conta nas últimas 2 horas.` };
     if (!r.queued && !sent && !failed && !waiting) return { status: 'ok', message: `${head} Esses comentários já tinham sido registrados antes. Veja o resultado na lista abaixo.` };
     return { status: 'ok', message: `${head} Enviadas: ${sent}, falharam: ${failed}, na espera: ${waiting}. O motivo de cada falha aparece na lista abaixo.` };
