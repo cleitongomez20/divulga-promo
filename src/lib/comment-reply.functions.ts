@@ -54,6 +54,22 @@ export const checkReplySetupFn = createServerFn({ method: 'POST' }).middleware([
   } catch (error) { return { status: 'error', message: await explain(error) }; }
 });
 
+// Manual test: reads the latest comments from the Instagram API (no webhook needed), queues the ones with the trigger and sends the replies.
+export const syncCommentsFn = createServerFn({ method: 'POST' }).middleware([requireSupabaseAuth]).handler(async ({ context }): Promise<ReplyActionResult> => {
+  try {
+    const db = await admin();
+    if (await tooSoon(db, context.userId)) return { status: 'error', message: 'Aguarde alguns segundos e tente de novo.' };
+    const { syncRecentComments } = await import('./comment-reply.sync.server');
+    const r = await syncRecentComments(db, { userId: context.userId, masterKey: masterKey() });
+    if (r.problem) return { status: 'error', message: r.problem };
+    const sent = r.send?.sent ?? 0; const failed = r.send?.failed ?? 0; const waiting = r.send?.waiting ?? 0;
+    const head = `Publicações verificadas: ${r.posts}. Comentários lidos: ${r.comments}, das últimas 2 horas: ${r.recent}, com o gatilho: ${r.matched}.`;
+    if (!r.matched) return { status: 'ok', message: `${head} Nenhum comentário novo com "EU QUERO" de outra conta nas últimas 2 horas.` };
+    if (!r.queued && !sent && !failed && !waiting) return { status: 'ok', message: `${head} Esses comentários já tinham sido registrados antes. Veja o resultado na lista abaixo.` };
+    return { status: 'ok', message: `${head} Enviadas: ${sent}, falharam: ${failed}, na espera: ${waiting}. O motivo de cada falha aparece na lista abaixo.` };
+  } catch (error) { return { status: 'error', message: await explain(error) }; }
+});
+
 export const subscribeCommentsFn = createServerFn({ method: 'POST' }).middleware([requireSupabaseAuth]).handler(async ({ context }): Promise<ReplyActionResult> => {
   try {
     const db = await admin();
