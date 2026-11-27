@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useServerFn } from '@tanstack/react-start';
-import { CircleAlert, CircleCheck, LoaderCircle, MessageCircleReply, RadioTower, Save, ShieldCheck } from 'lucide-react';
+import { CircleAlert, CircleCheck, LoaderCircle, MessageCircleReply, RadioTower, Save, Send, ShieldCheck } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { checkReplySetupFn, getReplyStatus, saveReplySettingsFn, subscribeCommentsFn } from '@/lib/comment-reply.functions';
+import { checkReplySetupFn, getReplyStatus, saveReplySettingsFn, subscribeCommentsFn, syncCommentsFn } from '@/lib/comment-reply.functions';
 import { DEFAULT_TEMPLATE, DEFAULT_TRIGGER, buildDm, replySettingsSchema } from '@/lib/comment-reply';
 import type { SetupCheck } from '@/lib/comment-reply.server';
 
@@ -12,7 +12,7 @@ const STATUS_LABELS: Record<string, string> = { detected: 'Na fila', sending: 'E
 export function CommentReplyCard() {
   const queryClient = useQueryClient();
   const { data: status, isLoading } = useQuery({ queryKey: ['comment-reply'], queryFn: () => getReplyStatus(), staleTime: 0, refetchInterval: 60_000 });
-  const save = useServerFn(saveReplySettingsFn); const check = useServerFn(checkReplySetupFn); const subscribe = useServerFn(subscribeCommentsFn);
+  const save = useServerFn(saveReplySettingsFn); const check = useServerFn(checkReplySetupFn); const subscribe = useServerFn(subscribeCommentsFn); const sync = useServerFn(syncCommentsFn);
   const [enabled, setEnabled] = useState(false);
   const [template, setTemplate] = useState(DEFAULT_TEMPLATE);
   const [busy, setBusy] = useState('');
@@ -30,6 +30,7 @@ export function CommentReplyCard() {
     if (!parsed.success) { setNotice(parsed.error.issues[0]?.message ?? 'Confira a mensagem.'); return; }
     const outcome = await save({ data: parsed.data }); setNotice(outcome.message);
   });
+  const syncNow = () => run('sync', async () => { const outcome = await sync(); setNotice(outcome.message); });
   const subscribeNow = () => run('subscribe', async () => { const outcome = await subscribe(); setNotice(outcome.message); });
   const checkNow = () => run('check', async () => {
     const outcome = await check();
@@ -55,7 +56,9 @@ export function CommentReplyCard() {
       <div className="mt-4 flex flex-wrap gap-3">
         <Button type="button" variant="outline" disabled={Boolean(busy)} onClick={() => void subscribeNow()}>{busy === 'subscribe' ? <LoaderCircle className="animate-spin" /> : <RadioTower />}Ativar recebimento</Button>
         <Button type="button" variant="outline" disabled={Boolean(busy)} onClick={() => void checkNow()}>{busy === 'check' ? <LoaderCircle className="animate-spin" /> : <ShieldCheck />}Verificar configuração</Button>
+        <Button type="button" variant="outline" disabled={Boolean(busy)} onClick={() => void syncNow()}>{busy === 'sync' ? <LoaderCircle className="animate-spin" /> : <Send />}Testar envio agora</Button>
       </div>
+      <p className="mt-2 text-xs text-muted-foreground">"Testar envio agora" lê os comentários das últimas 2 horas direto no Instagram, sem depender do aviso da Meta, e envia a mensagem (no máximo 3 por clique).</p>
       {result && <ul className="mt-4 space-y-2 text-sm">
         <li className="flex items-start gap-2">{result.permissions.ok ? <CircleCheck className="mt-0.5 size-4 text-primary" /> : <CircleAlert className="mt-0.5 size-4 text-destructive" />}
           <span>{result.permissions.ok ? 'As permissões, a Página e as tarefas necessárias estão liberadas.' : `Faltam autorizações ou requisitos na conexão: ${result.permissions.missing.join(', ')}. Gere um novo token com as permissões necessárias e reconecte a conta.`}</span></li>
