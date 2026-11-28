@@ -20,13 +20,13 @@ function config() {
 
 type Reply = { status: number; json: Record<string, unknown> | unknown[] | null };
 
-async function call(method: 'GET' | 'POST' | 'DELETE', path: string, body?: unknown): Promise<Reply> {
+async function call(method: 'GET' | 'POST' | 'DELETE', path: string, body?: unknown, timeoutMs = 15_000): Promise<Reply> {
   const { base, key } = config();
   let response: Response;
   try {
     response = await fetch(`${base}${path}`, {
       method, headers: { apikey: key, 'Content-Type': 'application/json' },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(15_000),
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (error) {
     throw new WhatsAppError(error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError') ? 'timeout' : 'network');
@@ -82,4 +82,20 @@ export async function removeInstance(name: string): Promise<void> {
   try { await call('DELETE', `/instance/logout/${safe}`); } catch (error) { if (error instanceof WhatsAppError && error.kind === 'not_configured') throw error; }
   const { status } = await call('DELETE', `/instance/delete/${safe}`);
   if (status >= 400 && status !== 404) throw new WhatsAppError('server');
+}
+
+/** Grupos em que o número conectado participa (só id, nome e quantidade de participantes). */
+export async function listGroups(name: string): Promise<{ jid: string; name: string; size: number | null }[]> {
+  const { status, json } = await call('GET', `/group/fetchAllGroups/${encodeURIComponent(name)}?getParticipants=false`, undefined, 45_000);
+  if (status >= 400) throw new WhatsAppError('server');
+  if (!Array.isArray(json)) return [];
+  const groups: { jid: string; name: string; size: number | null }[] = [];
+  for (const item of json) {
+    const o = obj(item); const id = o['id'];
+    if (typeof id !== 'string' || !id.endsWith('@g.us') || id.length > 80) continue;
+    const subject = typeof o['subject'] === 'string' ? o['subject'].trim() : '';
+    groups.push({ jid: id, name: (subject || 'Grupo sem nome').slice(0, 120), size: typeof o['size'] === 'number' && Number.isFinite(o['size']) ? Math.max(0, Math.round(o['size'])) : null });
+    if (groups.length >= 500) break;
+  }
+  return groups;
 }
