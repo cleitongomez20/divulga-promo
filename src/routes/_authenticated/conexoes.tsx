@@ -9,6 +9,7 @@ import { ClaudeCard } from '@/components/claude-card';
 import { OpenAiCard } from '@/components/openai-card';
 import { HiggsfieldCard } from '@/components/higgsfield-card';
 import { WhatsAppCard } from '@/components/whatsapp-card';
+import { WhatsAppGroupsCard } from '@/components/whatsapp-groups-card';
 import { CommentReplyCard } from '@/components/comment-reply-card';
 import { Button } from '@/components/ui/button';
 import { PasswordInput } from '@/components/password-input';
@@ -62,6 +63,7 @@ function ConnectionsPage() {
       <OpenAiCard />
       <HiggsfieldCard />
       <WhatsAppCard />
+      <WhatsAppGroupsCard />
       <CommentReplyCard />
     </div>
   </WorkspaceShell>;
