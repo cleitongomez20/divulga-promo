@@ -8,6 +8,7 @@ import { InstagramCard } from '@/components/instagram-card';
 import { ClaudeCard } from '@/components/claude-card';
 import { OpenAiCard } from '@/components/openai-card';
 import { HiggsfieldCard } from '@/components/higgsfield-card';
+import { WhatsAppCard } from '@/components/whatsapp-card';
 import { CommentReplyCard } from '@/components/comment-reply-card';
 import { Button } from '@/components/ui/button';
 import { PasswordInput } from '@/components/password-input';
@@ -60,6 +61,7 @@ function ConnectionsPage() {
       <ClaudeCard />
       <OpenAiCard />
       <HiggsfieldCard />
+      <WhatsAppCard />
       <CommentReplyCard />
     </div>
   </WorkspaceShell>;
