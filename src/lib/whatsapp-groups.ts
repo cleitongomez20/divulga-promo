@@ -28,3 +28,15 @@ export function describeRules(r: { enabled: boolean; days: number[]; windowStart
   const days = r.days.length === 7 ? 'todos os dias' : WEEKDAYS.filter(d => r.days.includes(d.value)).map(d => d.short).join(', ');
   return `A cada ${r.intervalMinutes} min, ${r.windowStart} às ${r.windowEnd}, ${days}`;
 }
+
+/** Depois desse tempo, a lista de grupos é buscada de novo no WhatsApp ao abrir a tela. */
+export const GROUP_SYNC_MAX_AGE_MS = 10 * 60 * 1000;
+
+/** Diz se está na hora de buscar os grupos de novo (nunca buscou, passou do prazo ou o relógio ficou inconsistente). */
+export function needsGroupSync(syncedAt: string | null | undefined, now: Date, maxAgeMs = GROUP_SYNC_MAX_AGE_MS): boolean {
+  if (!syncedAt) return true;
+  const at = Date.parse(syncedAt);
+  if (!Number.isFinite(at)) return true;
+  const age = now.getTime() - at;
+  return age >= maxAgeMs || age < -60_000;
+}

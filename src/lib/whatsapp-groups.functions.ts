@@ -1,8 +1,7 @@
 import { createServerFn } from '@tanstack/react-start';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { requireSupabaseAuth } from '@/integrations/supabase/auth-middleware';
-import { instanceNameFor, whatsappErrorMessage } from './whatsapp';
-import { groupRulesSchema } from './whatsapp-groups';
+import { groupRulesSchema, needsGroupSync } from './whatsapp-groups';
 
 export type WhatsAppGroup = {
   id: string; name: string; size: number | null; enabled: boolean; categoryId: number | null; keyword: string;
@@ -27,36 +26,21 @@ async function loadGroups(db: SupabaseClient, userId: string): Promise<WhatsAppG
 }
 const LOAD_ERROR = 'Não foi possível carregar os grupos. Tente de novo.';
 
-export const getWhatsAppGroups = createServerFn({ method: 'GET' }).middleware([requireSupabaseAuth]).handler(async ({ context }): Promise<GroupsResult> => {
-  const groups = await loadGroups(await admin(), context.userId);
-  return groups ? { ok: true, groups } : { ok: false, message: LOAD_ERROR };
-});
-
-/** Busca no WhatsApp conectado a lista atual de grupos e atualiza a tabela, sem mexer nas regras já salvas. */
-export const syncWhatsAppGroups = createServerFn({ method: 'POST' }).middleware([requireSupabaseAuth]).handler(async ({ context }): Promise<GroupsResult> => {
-  try {
-    const db = await admin();
-    if (await tooSoon(db, `whatsapp-groups:${context.userId}`, 10_000)) return { ok: false, message: 'Aguarde alguns segundos antes de atualizar de novo.' };
-    const { data: conn } = await db.from('whatsapp_connections').select('status').eq('user_id', context.userId).maybeSingle();
-    if ((conn as { status?: string } | null)?.status !== 'connected') return { ok: false, message: 'Conecte o WhatsApp primeiro.' };
-    const { listGroups } = await import('./whatsapp.server');
-    const found = await listGroups(instanceNameFor(context.userId));
-    const now = new Date().toISOString();
-    if (found.length) {
-      const { error } = await db.from('whatsapp_groups').upsert(found.map(g => ({ user_id: context.userId, group_jid: g.jid, name: g.name, size: g.size, present: true, updated_at: now })), { onConflict: 'user_id,group_jid' });
-      if (error) return { ok: false, message: 'Não foi possível salvar os grupos. Tente de novo.' };
-    }
-    // Grupos dos quais o número saiu deixam de aparecer e são pausados; as regras ficam guardadas caso ele volte.
-    const seen = new Set(found.map(g => g.jid));
-    const { data: all } = await db.from('whatsapp_groups').select('group_jid').eq('user_id', context.userId).eq('present', true);
-    const gone = ((all as { group_jid: string }[] | null) ?? []).map(r => r.group_jid).filter(jid => !seen.has(jid));
-    if (gone.length) await db.from('whatsapp_groups').update({ present: false, enabled: false }).eq('user_id', context.userId).in('group_jid', gone);
-    const groups = await loadGroups(db, context.userId);
-    return groups ? { ok: true, groups } : { ok: false, message: LOAD_ERROR };
-  } catch (error) {
-    const { WhatsAppError } = await import('./whatsapp.server');
-    return { ok: false, message: whatsappErrorMessage(error instanceof WhatsAppError ? error.kind : 'server') };
+/** Devolve os grupos. Se o WhatsApp está conectado e a lista nunca foi buscada (ou está velha), busca antes, sem botão. */
+export const loadWhatsAppGroups = createServerFn({ method: 'POST' }).middleware([requireSupabaseAuth]).handler(async ({ context }): Promise<GroupsResult> => {
+  const db = await admin();
+  const { data } = await db.from('whatsapp_connections').select('status,groups_synced_at').eq('user_id', context.userId).maybeSingle();
+  const conn = data as { status?: string; groups_synced_at?: string | null } | null;
+  let failure: GroupsResult | null = null;
+  if (conn?.status === 'connected' && needsGroupSync(conn.groups_synced_at, new Date()) && !(await tooSoon(db, `whatsapp-groups:${context.userId}`, 10_000))) {
+    const { syncGroupsFor } = await import('./whatsapp-groups.server');
+    const synced = await syncGroupsFor(db, context.userId);
+    if (!synced.ok) failure = { ok: false, message: synced.message };
   }
+  const groups = await loadGroups(db, context.userId);
+  if (!groups) return { ok: false, message: LOAD_ERROR };
+  // Se a busca falhou mas já existem grupos salvos, mostra os salvos.
+  return failure && groups.length === 0 ? failure : { ok: true, groups };
 });
 
 export const saveGroupRules = createServerFn({ method: 'POST' }).middleware([requireSupabaseAuth])
@@ -68,7 +52,7 @@ export const saveGroupRules = createServerFn({ method: 'POST' }).middleware([req
       window_start: data.windowStart, window_end: data.windowEnd, interval_minutes: data.intervalMinutes,
     }).eq('id', data.groupId).eq('user_id', context.userId).select('id');
     if (error) return { ok: false, message: 'Não foi possível salvar as regras. Confira os dados e tente de novo.' };
-    if (!changed?.length) return { ok: false, message: 'Esse grupo não foi encontrado. Atualize a lista de grupos.' };
+    if (!changed?.length) return { ok: false, message: 'Esse grupo não foi encontrado. Recarregue a página.' };
     const groups = await loadGroups(db, context.userId);
     return groups ? { ok: true, groups } : { ok: false, message: LOAD_ERROR };
   });
