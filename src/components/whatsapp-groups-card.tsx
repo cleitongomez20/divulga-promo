@@ -1,40 +1,32 @@
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useServerFn } from '@tanstack/react-start';
-import { ChevronDown, LoaderCircle, RefreshCw, Save, Users } from 'lucide-react';
+import { ChevronDown, LoaderCircle, Save, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { getWhatsAppStatus } from '@/lib/whatsapp.functions';
-import { getWhatsAppGroups, saveGroupRules, syncWhatsAppGroups, type GroupsResult, type WhatsAppGroup } from '@/lib/whatsapp-groups.functions';
+import { loadWhatsAppGroups, saveGroupRules, type GroupsResult, type WhatsAppGroup } from '@/lib/whatsapp-groups.functions';
 import { INTERVAL_OPTIONS, WEEKDAYS, describeRules, groupRulesSchema } from '@/lib/whatsapp-groups';
 
 export function WhatsAppGroupsCard() {
   const queryClient = useQueryClient();
   const { data: wa } = useQuery({ queryKey: ['whatsapp'], queryFn: () => getWhatsAppStatus(), staleTime: 0 });
   const connected = wa?.connection === 'connected';
-  const { data: list, isLoading } = useQuery({ queryKey: ['whatsapp-groups'], queryFn: () => getWhatsAppGroups(), enabled: connected, staleTime: 0 });
-  const sync = useServerFn(syncWhatsAppGroups);
-  const [busy, setBusy] = useState(false); const [notice, setNotice] = useState('');
+  const load = useServerFn(loadWhatsAppGroups);
+  // Os grupos carregam sozinhos. Logo após conectar a lista pode vir vazia; nesse caso tenta de novo algumas vezes.
+  const { data: list, isLoading } = useQuery({
+    queryKey: ['whatsapp-groups'], queryFn: () => load(), enabled: connected, staleTime: 60_000,
+    refetchInterval: query => { const d = query.state.data; const empty = !d || !d.ok || d.groups.length === 0; return empty && query.state.dataUpdateCount < 8 ? 8000 : false; },
+  });
   if (!connected) return null;
 
-  async function refresh() {
-    setBusy(true); setNotice('');
-    try {
-      const result = await sync();
-      if (result.ok) { queryClient.setQueryData(['whatsapp-groups'], result); setNotice(result.groups.length ? `${result.groups.length} grupos encontrados.` : 'Nenhum grupo encontrado neste número.'); }
-      else setNotice(result.message);
-    } catch { setNotice('Não foi possível atualizar agora. Tente de novo.'); }
-    finally { setBusy(false); }
-  }
   const groups = list?.ok ? list.groups : [];
   return <section className="min-w-0 rounded-lg border bg-card p-4 sm:p-7 lg:col-span-2" aria-labelledby="wa-groups-title">
-    <div className="flex flex-wrap items-start justify-between gap-3"><div className="flex items-center gap-3"><Users className="size-7 shrink-0 text-primary" /><h2 id="wa-groups-title" className="text-xl font-semibold">Grupos de ofertas</h2></div>
-      <Button variant="outline" className="min-h-11 w-full sm:w-auto" disabled={busy} onClick={refresh}>{busy ? <LoaderCircle className="animate-spin" /> : <RefreshCw />}Atualizar grupos</Button></div>
-    <p className="mt-3 text-sm text-muted-foreground">Escolha em quais grupos o Divulga Promo pode postar e defina, para cada um, a categoria, os dias, o horário e o intervalo. Nada é enviado ainda: o teste de envio vem na próxima etapa.</p>
-    {isLoading && <p className="mt-5 text-sm text-muted-foreground">Carregando grupos...</p>}
+    <div className="flex items-center gap-3"><Users className="size-7 shrink-0 text-primary" /><h2 id="wa-groups-title" className="text-xl font-semibold">Grupos de ofertas</h2></div>
+    <p className="mt-3 text-sm text-muted-foreground">Os grupos do número conectado são carregados automaticamente sempre que você abre esta tela. Escolha em quais o Divulga Promo pode postar e defina, para cada um, a categoria, os dias, o horário e o intervalo.</p>
+    {isLoading && <p role="status" className="mt-5 flex items-center gap-2 text-sm text-muted-foreground"><LoaderCircle className="size-4 animate-spin" />Carregando seus grupos, isso pode levar alguns segundos...</p>}
     {list && !list.ok && <p role="status" className="mt-5 text-sm">{list.message}</p>}
-    {list?.ok && groups.length === 0 && <p className="mt-5 text-sm text-muted-foreground">Nenhum grupo salvo ainda. Clique em Atualizar grupos para buscar os grupos do número conectado.</p>}
+    {list?.ok && groups.length === 0 && <p role="status" className="mt-5 text-sm text-muted-foreground">Nenhum grupo encontrado ainda. Se o número acabou de conectar, aguarde alguns segundos. Se ele não participa de nenhum grupo, adicione-o a um e recarregue a página.</p>}
     <ul className="mt-5 space-y-3">{groups.map(group => <GroupItem key={group.id} group={group} onSaved={result => queryClient.setQueryData(['whatsapp-groups'], result)} />)}</ul>
-    {notice && <p role="status" className="mt-5 break-words text-sm leading-relaxed">{notice}</p>}
   </section>;
 }
 
